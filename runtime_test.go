@@ -377,3 +377,36 @@ func (o *blockingWriter) Write(data []byte) (int, error) {
 	<-o.release
 	return len(data), nil
 }
+
+type consumerCallingWriter struct {
+	entered           chan struct{}
+	consumerCompleted chan bool
+	consumerReturned  chan struct{}
+	once              sync.Once
+}
+
+func newConsumerCallingWriter() *consumerCallingWriter {
+	return &consumerCallingWriter{
+		entered:           make(chan struct{}),
+		consumerCompleted: make(chan bool, 1),
+		consumerReturned:  make(chan struct{}),
+	}
+}
+
+func (w *consumerCallingWriter) Write(data []byte) (int, error) {
+	w.once.Do(func() {
+		close(w.entered)
+		go func() {
+			_ = Consumer()
+			close(w.consumerReturned)
+		}()
+
+		select {
+		case <-w.consumerReturned:
+			w.consumerCompleted <- true
+		case <-time.After(time.Second):
+			w.consumerCompleted <- false
+		}
+	})
+	return len(data), nil
+}

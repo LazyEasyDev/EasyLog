@@ -17,6 +17,7 @@ const DefaultMemoryMaxBytes int64 = 8 * 1024 * 1024
 
 // Options configures an EasyLog runtime.
 type Options struct {
+	// Level defaults to INFO when nil. It must not contain a typed-nil Leveler.
 	Level       slog.Leveler
 	AddSource   bool
 	ReplaceAttr func(groups []string, attr slog.Attr) slog.Attr

@@ -6,6 +6,7 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"runtime"
 	"testing"
 	"time"
 )
@@ -162,6 +163,86 @@ func TestCloseWaitsForInFlightWrite(t *testing.T) {
 	}
 	if !bytes.Contains(data, []byte(`"msg":"in flight"`)) {
 		t.Fatalf("in-flight record missing from file: %q", data)
+	}
+}
+
+func TestCloseDoesNotHoldPackageLockWhileDrainingOutput(t *testing.T) {
+	terminal := newConsumerCallingWriter()
+	if err := Init(
+		Options{MemoryMaxBytes: 1024},
+		&FileOptions{Directory: t.TempDir()},
+		terminal,
+	); err != nil {
+		t.Fatal(err)
+	}
+
+	packageState.RLock()
+	closed := make(chan error, 1)
+	go func() { closed <- Close() }()
+
+	deadline := time.Now().Add(time.Second)
+	for packageState.TryRLock() {
+		packageState.RUnlock()
+		if time.Now().After(deadline) {
+			packageState.RUnlock()
+			<-closed
+			t.Fatal("Close did not start")
+		}
+		runtime.Gosched()
+	}
+
+	logged := make(chan struct{})
+	go func() {
+		slog.Info("reentrant consumer")
+		close(logged)
+	}()
+	select {
+	case <-terminal.entered:
+	case <-time.After(time.Second):
+		packageState.RUnlock()
+		<-closed
+		t.Fatal("terminal write did not start")
+	}
+	packageState.RUnlock()
+
+	consumerCompleted := <-terminal.consumerCompleted
+	<-logged
+	if err := <-closed; err != nil {
+		t.Fatal(err)
+	}
+	<-terminal.consumerReturned
+	if !consumerCompleted {
+		t.Fatal("output callback blocked in Consumer while Close waited for output")
+	}
+}
+
+func TestCloseWaitsForTerminalOnlyWrite(t *testing.T) {
+	terminal := newBlockingWriter()
+	if err := Init(Options{}, nil, terminal); err != nil {
+		t.Fatal(err)
+	}
+
+	logged := make(chan struct{})
+	go func() {
+		slog.Info("terminal only")
+		close(logged)
+	}()
+	<-terminal.entered
+
+	closed := make(chan error, 1)
+	go func() { closed <- Close() }()
+	select {
+	case err := <-closed:
+		close(terminal.release)
+		<-logged
+		t.Fatalf("Close returned before the terminal write completed: %v", err)
+	case <-time.After(50 * time.Millisecond):
+	}
+
+	close(terminal.release)
+	<-logged
+	if err := <-closed; err != nil {
+		t.Fatal(err)
 	}
 }
 

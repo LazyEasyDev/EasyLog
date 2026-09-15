@@ -76,19 +76,23 @@ func Consumer() MemoryConsumer {
 // and closes the package-owned file output. It is safe to call more than once.
 func Close() error {
 	packageState.Lock()
-	defer packageState.Unlock()
-	instance := packageState.instance
-	if instance == nil {
+	if packageState.instance == nil {
+		packageState.Unlock()
 		return nil
 	}
+
+	instance := packageState.instance
 	packageState.instance = nil
+	packageState.Unlock()
+
 	if slog.Default() == instance.logger {
 		slog.SetDefault(instance.previousLogger)
 	}
+
+	instance.runtime.state.outputMu.Lock()
+	defer instance.runtime.state.outputMu.Unlock()
 	if instance.file == nil {
 		return nil
 	}
-	instance.runtime.state.outputMu.Lock()
-	defer instance.runtime.state.outputMu.Unlock()
 	return instance.file.Close()
 }
