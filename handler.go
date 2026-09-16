@@ -19,10 +19,13 @@ type handler struct {
 }
 
 func (h *handler) Enabled(_ context.Context, level slog.Level) bool {
-	return level >= h.state.level.Level()
+	return !h.state.closed.Load() && level >= h.state.level.Level()
 }
 
 func (h *handler) Handle(ctx context.Context, source slog.Record) error {
+	if h.state.closed.Load() {
+		return ErrClosed
+	}
 	if source.Level < h.state.level.Level() {
 		return nil
 	}

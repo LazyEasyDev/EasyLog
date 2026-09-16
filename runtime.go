@@ -6,7 +6,11 @@ import (
 	"fmt"
 	"log/slog"
 	"sync"
+	"sync/atomic"
 )
+
+// ErrClosed indicates that runtime shutdown has started.
+var ErrClosed = errors.New("easylog: closed")
 
 // Enricher extracts attributes from a log call's context.
 type Enricher func(context.Context) []slog.Attr
@@ -33,8 +37,9 @@ type runtimeState struct {
 	enrichers   []Enricher
 
 	memory   *memoryStore
-	outputs  Outputs
+	outputs  []Output
 	outputMu sync.Mutex
+	closed   atomic.Bool
 }
 
 // Runtime coordinates the handler, outputs, and optional memory consumer.
@@ -43,8 +48,10 @@ type Runtime struct {
 	root  *handler
 }
 
-// New constructs a runtime around the configured outputs.
-func New(options Options, outputs Outputs) *Runtime {
+// New copies the output slice and coordinates writing, synchronization, and
+// shutdown of the supplied outputs. Nil entries are skipped; typed-nil outputs
+// are not supported. Each output retains ownership of its underlying resources.
+func New(options Options, outputs []Output) *Runtime {
 	level, isLevelVar := options.Level.(*slog.LevelVar)
 	if options.Level == nil || (isLevelVar && level == nil) {
 		options.Level = slog.LevelInfo
@@ -55,7 +62,7 @@ func New(options Options, outputs Outputs) *Runtime {
 		addSource:   options.AddSource,
 		replaceAttr: options.ReplaceAttr,
 		enrichers:   append([]Enricher(nil), options.Enrichers...),
-		outputs:     outputs,
+		outputs:     append([]Output(nil), outputs...),
 	}
 
 	if options.MemoryMaxBytes > 0 {
@@ -85,19 +92,64 @@ func (r *Runtime) Consumer() MemoryConsumer {
 	return r.state.memory
 }
 
+// Sync synchronizes every output in order, attempting all even if one fails.
+// It waits for active output I/O and returns ErrClosed after shutdown starts.
+func (r *Runtime) Sync() error {
+	r.state.outputMu.Lock()
+	defer r.state.outputMu.Unlock()
+	if r.state.closed.Load() {
+		return ErrClosed
+	}
+
+	var failures []error
+	for index, output := range r.state.outputs {
+		if output == nil {
+			continue
+		}
+		if err := output.Sync(); err != nil {
+			failures = append(failures, fmt.Errorf("output %d sync: %w", index, err))
+		}
+	}
+	return errors.Join(failures...)
+}
+
+// Close stops new logging calls, waits for active output I/O, and closes every
+// output in order. It does not call Sync. Stop producers before closing.
+// Duplicate calls return nil immediately, including while shutdown is in progress;
+// only the call that starts shutdown returns output-close errors.
+func (r *Runtime) Close() error {
+	if !r.state.closed.CompareAndSwap(false, true) {
+		return nil
+	}
+	r.state.outputMu.Lock()
+	defer r.state.outputMu.Unlock()
+
+	var failures []error
+	for index, output := range r.state.outputs {
+		if output == nil {
+			continue
+		}
+		if err := output.Close(); err != nil {
+			failures = append(failures, fmt.Errorf("output %d close: %w", index, err))
+		}
+	}
+	return errors.Join(failures...)
+}
+
 func (s *runtimeState) write(record Record) error {
 	s.outputMu.Lock()
 	defer s.outputMu.Unlock()
+	if s.closed.Load() {
+		return ErrClosed
+	}
 
 	var failures []error
-	if s.outputs.Terminal != nil {
-		if err := s.outputs.Terminal.WriteRecord(record); err != nil {
-			failures = append(failures, fmt.Errorf("terminal output: %w", err))
+	for index, output := range s.outputs {
+		if output == nil {
+			continue
 		}
-	}
-	if s.outputs.File != nil {
-		if err := s.outputs.File.WriteRecord(record); err != nil {
-			failures = append(failures, fmt.Errorf("file output: %w", err))
+		if err := output.WriteRecord(record); err != nil {
+			failures = append(failures, fmt.Errorf("output %d write: %w", index, err))
 		}
 	}
 	return errors.Join(failures...)

@@ -18,7 +18,7 @@ import (
 )
 
 func TestNewAllowsNoOutputsOrMemory(t *testing.T) {
-	runtime := New(Options{}, Outputs{})
+	runtime := New(Options{}, nil)
 	if runtime.Consumer() != nil {
 		t.Fatal("runtime without memory has a consumer")
 	}
@@ -42,7 +42,7 @@ func TestNewLevelDefaults(test *testing.T) {
 		{name: "dynamic_level", level: &dynamicLevel, wantLevel: slog.LevelWarn},
 	} {
 		test.Run(testCase.name, func(test *testing.T) {
-			runtime := New(Options{Level: testCase.level, MemoryMaxBytes: 1024}, Outputs{})
+			runtime := New(Options{Level: testCase.level, MemoryMaxBytes: 1024}, nil)
 			logger := runtime.Logger()
 			if logger.Enabled(ctx, testCase.wantLevel-1) {
 				test.Fatal("level below threshold is enabled")
@@ -69,17 +69,17 @@ func TestNewMemoryMaxBytes(t *testing.T) {
 		t.Fatalf("default memory limit = %d, want 8 MiB", DefaultMemoryMaxBytes)
 	}
 
-	runtime := New(Options{MemoryMaxBytes: -1}, Outputs{})
+	runtime := New(Options{MemoryMaxBytes: -1}, nil)
 	if runtime.Consumer() != nil {
 		t.Fatal("negative memory limit enabled retention")
 	}
 
-	runtime = New(Options{MemoryMaxBytes: DefaultMemoryMaxBytes}, Outputs{})
+	runtime = New(Options{MemoryMaxBytes: DefaultMemoryMaxBytes}, nil)
 	if runtime.Consumer() == nil {
 		t.Fatal("positive memory limit did not enable retention")
 	}
 
-	runtime = New(Options{}, Outputs{Terminal: terminaloutput.New(io.Discard)})
+	runtime = New(Options{}, []Output{terminaloutput.NewJSON(io.Discard)})
 	if runtime.Consumer() != nil {
 		t.Fatal("zero memory limit enabled retention")
 	}
@@ -89,7 +89,7 @@ func TestRuntimeFanoutAndConsumeShareEncodedRecord(t *testing.T) {
 	var output bytes.Buffer
 	runtime := New(Options{
 		MemoryMaxBytes: 1024,
-	}, Outputs{Terminal: terminaloutput.New(&output)})
+	}, []Output{terminaloutput.NewJSON(&output)})
 	runtime.Logger().Info("hello", "answer", 42)
 	records, err := runtime.Consumer().Take(0)
 	if err != nil {
@@ -117,7 +117,7 @@ func TestRuntimeFanoutAndConsumeShareEncodedRecord(t *testing.T) {
 }
 
 func TestHandlerPreservesWithAttrsAndGroups(t *testing.T) {
-	runtime := New(Options{MemoryMaxBytes: 1024}, Outputs{})
+	runtime := New(Options{MemoryMaxBytes: 1024}, nil)
 	runtime.Logger().
 		With("service", "api").
 		WithGroup("request").
@@ -150,9 +150,9 @@ func TestEveryOutputAttemptedAndMemoryRetainedAfterFailure(t *testing.T) {
 	t.Cleanup(func() { _ = files.Close() })
 	runtime := New(Options{
 		MemoryMaxBytes: 1024,
-	}, Outputs{
-		Terminal: terminaloutput.New(terminalFailure),
-		File:     files,
+	}, []Output{
+		terminaloutput.NewJSON(terminalFailure),
+		files,
 	})
 	record := slog.NewRecord(time.Now(), slog.LevelError, "failed operation", 0)
 	if err := runtime.Handler().Handle(context.Background(), record); !errors.Is(err, writeFailure) {
@@ -177,7 +177,7 @@ func TestRecordAvailableWhileOutputBlocked(t *testing.T) {
 	output := newBlockingWriter()
 	runtime := New(Options{
 		MemoryMaxBytes: 1024,
-	}, Outputs{Terminal: terminaloutput.New(output)})
+	}, []Output{terminaloutput.NewJSON(output)})
 
 	logged := make(chan struct{})
 	go func() {
@@ -214,7 +214,7 @@ func TestDynamicLevelAndContextEnricher(t *testing.T) {
 			}
 			return []slog.Attr{slog.String("request_id", requestID)}
 		}},
-	}, Outputs{})
+	}, nil)
 	ctx := context.WithValue(context.Background(), requestIDKey{}, "req-123")
 	runtime.Logger().InfoContext(ctx, "disabled")
 	runtime.Logger().WarnContext(ctx, "enabled")
@@ -252,7 +252,7 @@ func TestEncodingSupportsSourceReplaceAttrAndLogValuer(t *testing.T) {
 			}
 			return attr
 		},
-	}, Outputs{})
+	}, nil)
 	runtime.Logger().Info("original", "lazy", staticLogValuer("resolved"))
 
 	records, err := runtime.Consumer().Take(0)
@@ -276,7 +276,7 @@ func TestMemoryOverflowDoesNotAffectOutput(t *testing.T) {
 	var output bytes.Buffer
 	runtime := New(Options{
 		MemoryMaxBytes: 100,
-	}, Outputs{Terminal: terminaloutput.New(&output)})
+	}, []Output{terminaloutput.NewJSON(&output)})
 	runtime.Logger().Info("first")
 	runtime.Logger().Info("second")
 
@@ -291,7 +291,7 @@ func TestMemoryOverflowDoesNotAffectOutput(t *testing.T) {
 	var rejectOutput bytes.Buffer
 	rejectRuntime := New(Options{
 		MemoryMaxBytes: 1,
-	}, Outputs{Terminal: terminaloutput.New(&rejectOutput)})
+	}, []Output{terminaloutput.NewJSON(&rejectOutput)})
 	rejectRuntime.Logger().Info("too large")
 	if rejectRuntime.Consumer().Len() != 0 || bytes.Count(rejectOutput.Bytes(), []byte{'\n'}) != 1 {
 		t.Fatal("rejected memory record did not remain independent from output")
@@ -308,9 +308,9 @@ func TestHandleJoinsMultipleOutputErrors(t *testing.T) {
 	if err := files.Close(); err != nil {
 		t.Fatal(err)
 	}
-	runtime := New(Options{}, Outputs{
-		Terminal: terminaloutput.New(terminalFailure),
-		File:     files,
+	runtime := New(Options{}, []Output{
+		terminaloutput.NewJSON(terminalFailure),
+		files,
 	})
 	record := slog.NewRecord(time.Now(), slog.LevelError, "failed", 0)
 	err = runtime.Handler().Handle(context.Background(), record)
@@ -331,7 +331,7 @@ func (value staticLogValuer) LogValue() slog.Value {
 func TestConcurrentHandleAndTake(t *testing.T) {
 	runtime := New(Options{
 		MemoryMaxBytes: 1 << 20,
-	}, Outputs{Terminal: terminaloutput.New(io.Discard)})
+	}, []Output{terminaloutput.NewJSON(io.Discard)})
 	logger := runtime.Logger()
 	start := make(chan struct{})
 	errorsSeen := make(chan error, 16)

@@ -23,9 +23,9 @@ func TestTerminalFileAndMemoryRemainIndependent(t *testing.T) {
 	var terminalData bytes.Buffer
 	runtime := easylog.New(easylog.Options{
 		MemoryMaxBytes: 1 << 20,
-	}, easylog.Outputs{
-		Terminal: terminal.New(&terminalData),
-		File:     fileOutput,
+	}, []easylog.Output{
+		terminal.NewJSON(&terminalData),
+		fileOutput,
 	})
 
 	for _, message := range []string{"first", "second", "third"} {
@@ -35,7 +35,10 @@ func TestTerminalFileAndMemoryRemainIndependent(t *testing.T) {
 	if err != nil || len(records) != 3 {
 		t.Fatalf("consume: records=%d err=%v", len(records), err)
 	}
-	if err := fileOutput.Close(); err != nil {
+	if err := runtime.Sync(); err != nil {
+		t.Fatal(err)
+	}
+	if err := runtime.Close(); err != nil {
 		t.Fatal(err)
 	}
 
@@ -68,9 +71,9 @@ func TestConcurrentTerminalAndFileOrderMatches(t *testing.T) {
 		t.Fatal(err)
 	}
 	var terminalData bytes.Buffer
-	runtime := easylog.New(easylog.Options{}, easylog.Outputs{
-		Terminal: terminal.New(&terminalData),
-		File:     fileOutput,
+	runtime := easylog.New(easylog.Options{}, []easylog.Output{
+		terminal.NewJSON(&terminalData),
+		fileOutput,
 	})
 	logger := runtime.Logger()
 
@@ -84,7 +87,7 @@ func TestConcurrentTerminalAndFileOrderMatches(t *testing.T) {
 		}()
 	}
 	wait.Wait()
-	if err := fileOutput.Close(); err != nil {
+	if err := runtime.Close(); err != nil {
 		t.Fatal(err)
 	}
 
