@@ -122,6 +122,7 @@ func newWithClock(options Options, now func() time.Time) (*Output, error) {
 }
 
 // WriteRecord writes one complete record, rotating first when necessary.
+// If segment creation fails, the record is dropped; later calls retry creation.
 // It returns an error only when the record cannot be fully written.
 func (o *Output) WriteRecord(record core.Record) error {
 	data := append(record.JSON(), '\n')
@@ -140,7 +141,11 @@ func (o *Output) WriteRecord(record core.Record) error {
 	dateChanged := store.active != nil && !store.activeSegment.date.Equal(date)
 	segmentFull := store.active != nil && store.activeBytes > 0 && store.activeBytes+int64(len(data)) > o.options.MaxSegmentBytes
 	if dateChanged || segmentFull {
-		prepareErr = errors.Join(prepareErr, o.rotate(store, date))
+		rotated, err := o.rotate(store, date)
+		prepareErr = errors.Join(prepareErr, err)
+		if !rotated {
+			return prepareErr
+		}
 	}
 	if store.active == nil {
 		return prepareErr
@@ -322,10 +327,10 @@ func (o *Output) openSegment(store *levelStore, date time.Time) error {
 	return errors.Join(resumeErr, o.cleanupClosedSegments(store))
 }
 
-func (o *Output) rotate(store *levelStore, date time.Time) error {
+func (o *Output) rotate(store *levelStore, date time.Time) (bool, error) {
 	nextFile, nextSegment, err := o.createSegment(store, date)
 	if err != nil {
-		return err
+		return false, err
 	}
 	previous := store.active
 	store.active = nextFile
@@ -335,7 +340,7 @@ func (o *Output) rotate(store *levelStore, date time.Time) error {
 
 	closeErr := previous.Close()
 	cleanupErr := o.cleanupClosedSegments(store)
-	return errors.Join(closeErr, cleanupErr)
+	return true, errors.Join(closeErr, cleanupErr)
 }
 
 func (o *Output) resumeSegment(store *levelStore, date time.Time) (bool, error) {

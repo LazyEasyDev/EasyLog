@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"sync"
 	"testing"
 	"time"
 )
@@ -274,6 +275,94 @@ func TestInitRejectsSecondInitialization(t *testing.T) {
 	}
 }
 
+func TestInitRejectsWhileClosing(test *testing.T) {
+	for _, testCase := range []struct {
+		name     string
+		withFile bool
+	}{
+		{name: "terminal_only"},
+		{name: "with_file", withFile: true},
+	} {
+		test.Run(testCase.name, func(test *testing.T) {
+			previousLogger := slog.Default()
+			var fileOptions *FileOptions
+			if testCase.withFile {
+				fileOptions = &FileOptions{Directory: test.TempDir()}
+			}
+			if err := Init(Options{MemoryMaxBytes: 1024}, fileOptions, &bytes.Buffer{}); err != nil {
+				test.Fatal(err)
+			}
+			test.Cleanup(func() {
+				_ = Close()
+				slog.SetDefault(previousLogger)
+			})
+			slog.Info("before close")
+			finishClose := startBlockedClose(test)
+
+			secondDirectory := filepath.Join(test.TempDir(), "second")
+			err := Init(Options{}, &FileOptions{Directory: secondDirectory}, nil)
+			if !errors.Is(err, ErrAlreadyInitialized) {
+				test.Fatalf("Init during Close error = %v, want %v", err, ErrAlreadyInitialized)
+			}
+			if _, err := os.Stat(secondDirectory); !errors.Is(err, os.ErrNotExist) {
+				test.Fatalf("Init during Close touched its file directory: %v", err)
+			}
+			if Consumer() != nil {
+				test.Fatal("package consumer remains available during Close")
+			}
+
+			if err := finishClose(); err != nil {
+				test.Fatal(err)
+			}
+			if slog.Default() != previousLogger {
+				test.Fatal("Close did not restore the previous slog default")
+			}
+			if err := Init(Options{}, &FileOptions{Directory: secondDirectory}, nil); err != nil {
+				test.Fatalf("Init after Close: %v", err)
+			}
+			if err := Close(); err != nil {
+				test.Fatal(err)
+			}
+			if slog.Default() != previousLogger {
+				test.Fatal("reinitialization restored the wrong slog default")
+			}
+		})
+	}
+}
+
+func TestConcurrentCloseReturnsImmediately(test *testing.T) {
+	previousLogger := slog.Default()
+	if err := Init(Options{}, nil, nil); err != nil {
+		test.Fatal(err)
+	}
+	test.Cleanup(func() {
+		_ = Close()
+		slog.SetDefault(previousLogger)
+	})
+	finishClose := startBlockedClose(test)
+
+	closed := make(chan error, 1)
+	go func() { closed <- Close() }()
+	select {
+	case err := <-closed:
+		if err != nil {
+			test.Fatalf("concurrent Close: %v", err)
+		}
+	case <-time.After(time.Second):
+		test.Fatal("concurrent Close waited for the first shutdown")
+	}
+
+	if err := Init(Options{}, nil, nil); !errors.Is(err, ErrAlreadyInitialized) {
+		test.Fatalf("Init after concurrent Close error = %v, want %v", err, ErrAlreadyInitialized)
+	}
+	if err := finishClose(); err != nil {
+		test.Fatal(err)
+	}
+	if err := Init(Options{}, nil, nil); err != nil {
+		test.Fatalf("Init after the first Close finished: %v", err)
+	}
+}
+
 func TestInitFailureDoesNotInstallRuntime(t *testing.T) {
 	previousLogger := slog.Default()
 	err := Init(
@@ -289,5 +378,37 @@ func TestInitFailureDoesNotInstallRuntime(t *testing.T) {
 	}
 	if slog.Default() != previousLogger {
 		t.Fatal("failed Init changed slog's default")
+	}
+}
+
+func startBlockedClose(test *testing.T) func() error {
+	test.Helper()
+	instance := packageState.instance
+	instance.runtime.state.outputMu.Lock()
+	closed := make(chan error, 1)
+	go func() { closed <- Close() }()
+	finishClose := sync.OnceValue(func() error {
+		instance.runtime.state.outputMu.Unlock()
+		return <-closed
+	})
+	test.Cleanup(func() {
+		if err := finishClose(); err != nil {
+			test.Errorf("Close: %v", err)
+		}
+	})
+
+	deadline := time.Now().Add(time.Second)
+	for {
+		if packageState.TryRLock() {
+			detached := packageState.instance == nil
+			packageState.RUnlock()
+			if detached {
+				return finishClose
+			}
+		}
+		if time.Now().After(deadline) {
+			test.Fatal("Close did not release package state while draining output")
+		}
+		runtime.Gosched()
 	}
 }

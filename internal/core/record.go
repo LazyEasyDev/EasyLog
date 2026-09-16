@@ -7,19 +7,13 @@ import (
 
 // Record is an immutable encoded log record.
 type Record struct {
-	sequence uint64
-	level    slog.Level
-	json     []byte
+	level slog.Level
+	json  []byte
 }
 
 // NewRecord creates an immutable encoded log record.
-func NewRecord(sequence uint64, level slog.Level, data []byte) Record {
-	return Record{sequence: sequence, level: level, json: data}
-}
-
-// Sequence returns the process-local ingestion sequence.
-func (r Record) Sequence() uint64 {
-	return r.sequence
+func NewRecord(level slog.Level, data []byte) Record {
+	return Record{level: level, json: data}
 }
 
 // Level returns the record's log level.

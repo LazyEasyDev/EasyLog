@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"log/slog"
 	"sync"
-	"sync/atomic"
 )
 
 // Enricher extracts attributes from a log call's context.
@@ -17,7 +16,8 @@ const DefaultMemoryMaxBytes int64 = 8 * 1024 * 1024
 
 // Options configures an EasyLog runtime.
 type Options struct {
-	// Level defaults to INFO when nil. It must not contain a typed-nil Leveler.
+	// Level defaults to INFO when nil or a nil *slog.LevelVar.
+	// Other typed-nil Levelers are not supported.
 	Level       slog.Leveler
 	AddSource   bool
 	ReplaceAttr func(groups []string, attr slog.Attr) slog.Attr
@@ -32,7 +32,6 @@ type runtimeState struct {
 	replaceAttr func([]string, slog.Attr) slog.Attr
 	enrichers   []Enricher
 
-	sequence atomic.Uint64
 	memory   *memoryStore
 	outputs  Outputs
 	outputMu sync.Mutex
@@ -46,7 +45,8 @@ type Runtime struct {
 
 // New constructs a runtime around the configured outputs.
 func New(options Options, outputs Outputs) *Runtime {
-	if options.Level == nil {
+	level, isLevelVar := options.Level.(*slog.LevelVar)
+	if options.Level == nil || (isLevelVar && level == nil) {
 		options.Level = slog.LevelInfo
 	}
 

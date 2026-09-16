@@ -9,27 +9,27 @@ import (
 
 func TestMemoryStoreEvictsOldestPrefix(t *testing.T) {
 	store := newMemoryStore(5)
-	store.append(core.NewRecord(1, 0, []byte("aa")))
-	store.append(core.NewRecord(2, 0, []byte("bb")))
-	store.append(core.NewRecord(3, 0, []byte("ccc")))
+	store.append(core.NewRecord(0, []byte("aa")))
+	store.append(core.NewRecord(0, []byte("bb")))
+	store.append(core.NewRecord(0, []byte("ccc")))
 	records, err := store.Take(0)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(records) != 2 || records[0].Sequence() != 2 || records[1].Sequence() != 3 {
+	if len(records) != 2 || string(records[0].JSON()) != "bb" || string(records[1].JSON()) != "ccc" {
 		t.Fatalf("unexpected FIFO result: %+v", records)
 	}
 }
 
 func TestMemoryStoreRejectsOversizedRecordWithoutEviction(t *testing.T) {
 	store := newMemoryStore(4)
-	store.append(core.NewRecord(1, 0, []byte("ok")))
-	store.append(core.NewRecord(2, 0, []byte("large")))
+	store.append(core.NewRecord(0, []byte("ok")))
+	store.append(core.NewRecord(0, []byte("large")))
 	records, err := store.Take(0)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(records) != 1 || records[0].Sequence() != 1 {
+	if len(records) != 1 || string(records[0].JSON()) != "ok" {
 		t.Fatalf("existing record was changed: %+v", records)
 	}
 }
@@ -47,15 +47,15 @@ func TestMemoryStoreTakeReturnsImmediatelyWhenEmpty(t *testing.T) {
 
 func TestMemoryStoreTakeHonorsPageSize(t *testing.T) {
 	store := newMemoryStore(100)
-	store.append(core.NewRecord(1, 0, []byte("a")))
-	store.append(core.NewRecord(2, 0, []byte("b")))
-	store.append(core.NewRecord(3, 0, []byte("c")))
+	store.append(core.NewRecord(0, []byte("a")))
+	store.append(core.NewRecord(0, []byte("b")))
+	store.append(core.NewRecord(0, []byte("c")))
 
 	records, err := store.Take(2)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(records) != 2 || records[0].Sequence() != 1 || records[1].Sequence() != 2 {
+	if len(records) != 2 || string(records[0].JSON()) != "a" || string(records[1].JSON()) != "b" {
 		t.Fatalf("unexpected result: %+v", records)
 	}
 	if store.Len() != 1 || store.Bytes() != 1 {

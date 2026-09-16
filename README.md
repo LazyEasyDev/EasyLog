@@ -49,6 +49,12 @@ easylog.Init(easylog.Options{}, &easylog.FileOptions{Directory: logDirectory}, n
 Call `easylog.Close()` before the application exits. It waits for active writes,
 closes the managed file output, and restores the previous default logger.
 
+`Init` returns `ErrAlreadyInitialized` while initialized or closing. A concurrent
+`Close` returns `nil` immediately without waiting; only the call that starts
+shutdown waits for output and returns any file-close error. Wait for that call
+to finish before reinitializing. A blocked output writer can delay shutdown
+indefinitely; `Close` has no timeout.
+
 ## Options
 
 The zero-value `Options` logs at `INFO` and above with memory retention disabled.
@@ -96,6 +102,11 @@ EasyLog creates a `logs` subdirectory beneath `FileOptions.Directory`.
 - Segments rotate at 8 MiB or when the UTC date changes.
 - Seven segments per level are retained by default.
 - A restart resumes the latest usable segment for the current UTC date.
+
+If a required segment cannot be created, that record is dropped from file output
+and `WriteRecord` returns the creation error. It is not appended to the old
+segment or queued for replay. Later records retry creation; terminal output and
+memory retention are unaffected.
 
 Set `MaxSegmentBytes`, `MaxSegments`, or `Permissions` in `FileOptions` to
 override the file defaults. Use only one file output or process for a managed

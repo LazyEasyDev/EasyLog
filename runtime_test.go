@@ -25,6 +25,45 @@ func TestNewAllowsNoOutputsOrMemory(t *testing.T) {
 	runtime.Logger().Info("discarded")
 }
 
+func TestNewLevelDefaults(test *testing.T) {
+	var nilLevel *slog.LevelVar
+	var dynamicLevel slog.LevelVar
+	dynamicLevel.Set(slog.LevelWarn)
+	ctx := context.Background()
+
+	for _, testCase := range []struct {
+		name      string
+		level     slog.Leveler
+		wantLevel slog.Level
+	}{
+		{name: "nil", level: nil, wantLevel: slog.LevelInfo},
+		{name: "nil_level_var", level: nilLevel, wantLevel: slog.LevelInfo},
+		{name: "fixed_level", level: slog.LevelDebug, wantLevel: slog.LevelDebug},
+		{name: "dynamic_level", level: &dynamicLevel, wantLevel: slog.LevelWarn},
+	} {
+		test.Run(testCase.name, func(test *testing.T) {
+			runtime := New(Options{Level: testCase.level, MemoryMaxBytes: 1024}, Outputs{})
+			logger := runtime.Logger()
+			if logger.Enabled(ctx, testCase.wantLevel-1) {
+				test.Fatal("level below threshold is enabled")
+			}
+			if !logger.Enabled(ctx, testCase.wantLevel) {
+				test.Fatal("threshold level is disabled")
+			}
+
+			logger.Log(ctx, testCase.wantLevel-1, "filtered")
+			logger.Log(ctx, testCase.wantLevel, "retained")
+			records, err := runtime.Consumer().Take(0)
+			if err != nil || len(records) != 1 {
+				test.Fatalf("records=%d err=%v, want 1 record and no error", len(records), err)
+			}
+			if records[0].Level() != testCase.wantLevel {
+				test.Fatalf("record level = %v, want %v", records[0].Level(), testCase.wantLevel)
+			}
+		})
+	}
+}
+
 func TestNewMemoryMaxBytes(t *testing.T) {
 	if DefaultMemoryMaxBytes != 8*1024*1024 {
 		t.Fatalf("default memory limit = %d, want 8 MiB", DefaultMemoryMaxBytes)
@@ -63,9 +102,6 @@ func TestRuntimeFanoutAndConsumeShareEncodedRecord(t *testing.T) {
 	outputRecord := bytes.TrimSuffix(output.Bytes(), []byte{'\n'})
 	if !bytes.Equal(records[0].JSON(), outputRecord) {
 		t.Fatal("consumer and output received different encodings")
-	}
-	if records[0].Sequence() != 1 {
-		t.Fatalf("got sequence %d, want 1", records[0].Sequence())
 	}
 	if records[0].Level() != slog.LevelInfo {
 		t.Fatalf("got level %v, want INFO", records[0].Level())
@@ -197,6 +233,12 @@ func TestDynamicLevelAndContextEnricher(t *testing.T) {
 	}
 	if decoded["msg"] != "enabled" || decoded["request_id"] != "req-123" {
 		t.Fatalf("unexpected enriched record: %v", decoded)
+	}
+
+	level.Set(slog.LevelDebug)
+	runtime.Logger().DebugContext(ctx, "enabled after level update")
+	if runtime.Consumer().Len() != 1 {
+		t.Fatalf("memory records after level update = %d, want 1", runtime.Consumer().Len())
 	}
 }
 

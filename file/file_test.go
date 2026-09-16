@@ -3,6 +3,7 @@ package file
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"log/slog"
 	"os"
 	"path/filepath"
@@ -237,41 +238,74 @@ func TestWriteFailureRetiresActiveSegment(t *testing.T) {
 	}
 }
 
-func TestCreateFailureKeepsCurrentSegmentUsable(t *testing.T) {
-	parent := t.TempDir()
-	directory := filepath.Join(parent, "logs")
-	output, err := newWithClock(Options{
-		Directory: directory, MaxSegmentBytes: 1, MaxSegments: 2,
-	}, func() time.Time {
-		return time.Date(2026, 9, 13, 14, 32, 5, 0, time.UTC)
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	writeMessage(t, output, slog.LevelInfo, "first")
+func TestCreateFailureDropsCurrentRecord(test *testing.T) {
+	firstRecord := encodedRecord(slog.LevelInfo, "first")
+	for _, testCase := range []struct {
+		name            string
+		maxSegmentBytes int64
+		advance         time.Duration
+	}{
+		{name: "size", maxSegmentBytes: firstRecord.Size() + 1},
+		{name: "date", maxSegmentBytes: 1 << 20, advance: 24 * time.Hour},
+	} {
+		test.Run(testCase.name, func(test *testing.T) {
+			parent := test.TempDir()
+			directory := filepath.Join(parent, "logs")
+			current := time.Date(2026, 9, 13, 14, 32, 5, 0, time.UTC)
+			output, err := newWithClock(Options{
+				Directory: directory, MaxSegmentBytes: testCase.maxSegmentBytes, MaxSegments: 2,
+			}, func() time.Time { return current })
+			if err != nil {
+				test.Fatal(err)
+			}
+			test.Cleanup(func() { _ = output.Close() })
+			writeMessage(test, output, slog.LevelInfo, "first")
 
-	movedDirectory := filepath.Join(parent, "moved")
-	if err := os.Rename(directory, movedDirectory); err != nil {
-		t.Fatal(err)
-	}
-	_ = output.WriteRecord(encodedRecord(slog.LevelInfo, "second"))
-	if err := output.Close(); err != nil {
-		t.Fatal(err)
-	}
+			store := output.storeForLevel(slog.LevelInfo)
+			previousFile := store.active
+			previousSegment := store.activeSegment
+			previousBytes := store.activeBytes
+			current = current.Add(testCase.advance)
+			movedDirectory := filepath.Join(parent, "moved")
+			if err := os.Rename(directory, movedDirectory); err != nil {
+				test.Fatal(err)
+			}
+			for _, message := range []string{"dropped once", "dropped twice"} {
+				err := output.WriteRecord(encodedRecord(slog.LevelInfo, message))
+				if !errors.Is(err, os.ErrNotExist) {
+					test.Fatalf("failed rotation error = %v, want %v", err, os.ErrNotExist)
+				}
+			}
+			if store.active != previousFile || store.activeSegment != previousSegment || store.activeBytes != previousBytes {
+				test.Fatal("failed rotation changed the active segment state")
+			}
+			data, err := os.ReadFile(filepath.Join(movedDirectory, logsDirectoryName, previousSegment.name))
+			if err != nil {
+				test.Fatal(err)
+			}
+			if !bytes.Equal(data, append(firstRecord.JSON(), '\n')) {
+				test.Fatalf("failed rotation changed the active segment: %q", data)
+			}
 
-	entries, err := os.ReadDir(filepath.Join(movedDirectory, logsDirectoryName))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(entries) != 1 {
-		t.Fatalf("got %d files, want the original active segment", len(entries))
-	}
-	data, err := os.ReadFile(filepath.Join(movedDirectory, logsDirectoryName, entries[0].Name()))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if bytes.Count(data, []byte{'\n'}) != 2 {
-		t.Fatalf("active segment did not receive both records: %q", data)
+			if err := os.Rename(movedDirectory, directory); err != nil {
+				test.Fatal(err)
+			}
+			writeMessage(test, output, slog.LevelInfo, "recovered")
+			if store.activeSegment.name == previousSegment.name {
+				test.Fatal("next write did not retry rotation")
+			}
+			if err := output.Close(); err != nil {
+				test.Fatal(err)
+			}
+			data, err = os.ReadFile(store.activeSegment.path)
+			if err != nil {
+				test.Fatal(err)
+			}
+			want := append(encodedRecord(slog.LevelInfo, "recovered").JSON(), '\n')
+			if !bytes.Equal(data, want) {
+				test.Fatalf("recovered segment data = %q, want %q", data, want)
+			}
+		})
 	}
 }
 
@@ -593,7 +627,7 @@ func encodedRecord(level slog.Level, message string) core.Record {
 		"level": level.String(),
 		"msg":   message,
 	})
-	return core.NewRecord(0, level, data)
+	return core.NewRecord(level, data)
 }
 
 func matchingFiles(t *testing.T, directory string, pattern interface{ MatchString(string) bool }) []string {

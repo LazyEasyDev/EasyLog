@@ -27,7 +27,6 @@ func (h *handler) Handle(ctx context.Context, source slog.Record) error {
 		return nil
 	}
 
-	sequence := h.state.sequence.Add(1)
 	source = source.Clone()
 	for _, enrich := range h.state.enrichers {
 		if enrich != nil {
@@ -39,7 +38,7 @@ func (h *handler) Handle(ctx context.Context, source slog.Record) error {
 	if err != nil {
 		return err
 	}
-	record := core.NewRecord(sequence, source.Level, data)
+	record := core.NewRecord(source.Level, data)
 
 	if h.state.memory != nil {
 		h.state.memory.append(record)

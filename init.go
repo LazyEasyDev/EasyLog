@@ -10,7 +10,7 @@ import (
 	"github.com/LazyEasyDev/EasyLog/terminal"
 )
 
-// ErrAlreadyInitialized indicates that an initializer was called before Close.
+// ErrAlreadyInitialized indicates that Init was called while initialized or closing.
 var ErrAlreadyInitialized = errors.New("easylog: already initialized")
 
 // FileOptions configures the file output created by Init.
@@ -26,14 +26,16 @@ type packageRuntime struct {
 var packageState struct {
 	sync.RWMutex
 	instance *packageRuntime
+	closing  bool
 }
 
 // Init creates the package-level runtime and installs its logger as slog's default.
 // A nil fileOptions or terminalWriter disables that output.
+// Init returns ErrAlreadyInitialized until the previous Close has finished.
 func Init(options Options, fileOptions *FileOptions, terminalWriter io.Writer) error {
 	packageState.Lock()
 	defer packageState.Unlock()
-	if packageState.instance != nil {
+	if packageState.instance != nil || packageState.closing {
 		return ErrAlreadyInitialized
 	}
 
@@ -74,6 +76,8 @@ func Consumer() MemoryConsumer {
 
 // Close restores the previous slog default, waits for in-flight output writes,
 // and closes the package-owned file output. It is safe to call more than once.
+// Calls made while shutdown is in progress return nil immediately; only the call
+// that starts shutdown waits for output and returns any file-close error.
 func Close() error {
 	packageState.Lock()
 	if packageState.instance == nil {
@@ -83,6 +87,7 @@ func Close() error {
 
 	instance := packageState.instance
 	packageState.instance = nil
+	packageState.closing = true
 	packageState.Unlock()
 
 	if slog.Default() == instance.logger {
@@ -90,9 +95,14 @@ func Close() error {
 	}
 
 	instance.runtime.state.outputMu.Lock()
-	defer instance.runtime.state.outputMu.Unlock()
-	if instance.file == nil {
-		return nil
+	var closeErr error
+	if instance.file != nil {
+		closeErr = instance.file.Close()
 	}
-	return instance.file.Close()
+	instance.runtime.state.outputMu.Unlock()
+
+	packageState.Lock()
+	packageState.closing = false
+	packageState.Unlock()
+	return closeErr
 }
