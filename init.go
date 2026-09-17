@@ -3,6 +3,7 @@ package easylog
 import (
 	"errors"
 	"io"
+	"log"
 	"log/slog"
 	"sync"
 
@@ -37,9 +38,11 @@ type InitOptions struct {
 }
 
 type packageRuntime struct {
-	runtime        *Runtime
-	logger         *slog.Logger
-	previousLogger *slog.Logger
+	runtime           *Runtime
+	logger            *slog.Logger
+	previousLogger    *slog.Logger
+	previousLogWriter io.Writer
+	previousLogFlags  int
 }
 
 var packageState struct {
@@ -99,9 +102,11 @@ func installRuntimeLocked(options Options, outputs []Output) {
 	runtime := New(options, outputs)
 	logger := runtime.Logger()
 	packageState.instance = &packageRuntime{
-		runtime:        runtime,
-		logger:         logger,
-		previousLogger: slog.Default(),
+		runtime:           runtime,
+		logger:            logger,
+		previousLogger:    slog.Default(),
+		previousLogWriter: log.Writer(),
+		previousLogFlags:  log.Flags(),
 	}
 	slog.SetDefault(logger)
 }
@@ -130,7 +135,9 @@ func Sync() error {
 	return instance.runtime.Sync()
 }
 
-// Close restores the previous slog default and closes the package runtime.
+// Close restores the previous slog default, standard log writer, and flags if
+// EasyLog's logger is still the default, then closes the package runtime.
+// Global logging reconfiguration must be coordinated with initialization and Close.
 // Outputs release their owned resources; terminal output leaves its writer open.
 // It is safe to call more than once.
 // Calls made while shutdown is in progress return nil immediately; only the call
@@ -149,6 +156,8 @@ func Close() error {
 
 	if slog.Default() == instance.logger {
 		slog.SetDefault(instance.previousLogger)
+		log.SetOutput(instance.previousLogWriter)
+		log.SetFlags(instance.previousLogFlags)
 	}
 
 	closeErr := instance.runtime.Close()

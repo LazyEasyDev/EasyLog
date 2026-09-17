@@ -338,6 +338,7 @@ func (o *Output) rotate(store *levelStore, date time.Time) (bool, error) {
 	store.activeBytes = 0
 	store.segments = append(store.segments, nextSegment)
 
+	_ = previous.Sync()
 	closeErr := previous.Close()
 	cleanupErr := o.cleanupClosedSegments(store)
 	return true, errors.Join(closeErr, cleanupErr)

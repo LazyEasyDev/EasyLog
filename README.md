@@ -94,6 +94,32 @@ uses the grouped configuration instead of positional output arguments.
 zero or a negative value disables it. `ReplaceAttr` customizes encoded
 attributes, and `Enrichers` can add values derived from `context.Context`.
 
+## Reserved Attribute Keys
+
+Avoid `time`, `level`, `msg`, and `source` as top-level user attribute keys or
+group names. These keys belong to EasyLog's built-in metadata, even when the
+corresponding field is disabled, omitted, or renamed. Conflicting user
+attributes are silently ignored; the log message and other attributes are
+still recorded.
+
+The rule applies to log-call attributes, `With` attributes, context enrichers,
+and user attributes renamed by `ReplaceAttr`. Filtering happens before encoding,
+so terminal, file, custom outputs, and memory receive the same filtered record.
+`ReplaceAttr` can still customize the built-in metadata itself. Other duplicate
+attribute names retain their usual `slog` behavior.
+
+Use a different key, such as `audit_level`, or put the value inside a named user
+group:
+
+```go
+slog.Info("event", slog.Group("data", slog.String("level", "AUDIT")))
+```
+
+Nested keys do not conflict with top-level metadata. Unnamed groups are inlined,
+so they do not bypass the rule. A reserved top-level group, including one opened
+with `WithGroup`, is ignored with all of its attributes; attributes bound before
+entering that group remain intact.
+
 ## Terminal Display
 
 Terminal output uses text by default. A nil `Terminal.Formatter` or
@@ -256,9 +282,35 @@ EasyLog creates a `logs` subdirectory beneath `FileOptions.Directory`.
 - Files contain newline-delimited JSON.
 - Levels use `debug_`, `info_`, `warn_`, and `err_` prefixes.
 - Names use a UTC date and sequence, such as `info_20260914_0.jsonl`.
-- Segments rotate at 8 MiB or when the UTC date changes.
-- Seven segments per level are retained by default.
+- The default segment-size rotation threshold is 8 MiB; segments also rotate
+	when the UTC date changes.
+- The default retention target is seven segments per level, including the active
+	segment.
 - A restart resumes the latest usable segment for the current UTC date.
+
+`MaxSegmentBytes` is not a hard file-size cap. A nonempty segment rotates before
+adding a record would exceed the threshold. Records are not split across
+segments: a single oversized record is written whole into an empty segment and
+can exceed the configured size.
+
+Size and date rotation attempt to synchronize the old segment before closing
+it. Errors from this synchronization are ignored, so rotation and the new
+record's write continue. Rotation can therefore add disk I/O latency.
+Explicit `Sync()` still synchronizes active segments and returns their errors;
+it does not retry or report ignored synchronization failures from earlier
+rotations. This is best-effort durability, not a guarantee that every preceding
+record is durable. `Close()` still does not call `Sync()` automatically.
+
+`MaxSegments` is best-effort retention. Cleanup runs only when that level opens
+or rotates a segment, not at startup or in the background. Startup scans existing
+segments without pruning them, so an inactive level can retain more than the
+configured count.
+
+If deleting the oldest segment fails, cleanup stops for that attempt and retries
+on a later segment opening or rotation. New records can still be written, so the
+segment count can keep growing while deletion fails. A fully written record
+returns `nil` from `WriteRecord` even when cleanup fails. These settings do not
+guarantee a strict disk-usage bound.
 
 If a required segment cannot be created, that record is dropped from file output
 and `WriteRecord` returns the creation error. It is not appended to the old
@@ -381,8 +433,21 @@ runtime.
 The package-level `Sync()` delegates to the current runtime without holding the
 package lock during output I/O. It returns nil when no runtime is installed; if
 shutdown starts after it captures a runtime, it may return `ErrClosed`.
-Package-level `Close()` additionally restores the previous default logger if
-EasyLog's logger is still the default, and detaches the package consumer.
+
+`Init` and `InitWithOutputs` install `slog.Default()` and, through
+`slog.SetDefault`, redirect the standard `log` package too. They save the previous
+`slog` logger, standard log writer, and flags. Package-level `Close()` restores
+all three before closing the runtime if EasyLog's logger is still the default.
+If the application has installed a different default logger, `Close()` leaves
+that logger and the standard log configuration untouched. It also detaches the
+package consumer.
+
+Coordinate global logging reconfiguration with initialization and `Close()`;
+the default-logger check and restoration are not atomic with external setters.
+While EasyLog remains the default, independent changes to `log.SetOutput` or
+`log.SetFlags` are replaced by the saved values on close. The previous logger's
+resources must remain usable; restoring its configuration does not reopen
+closed resources or coordinate outputs shared with the closing runtime.
 
 ## Behavior
 

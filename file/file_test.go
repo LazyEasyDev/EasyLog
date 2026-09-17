@@ -309,6 +309,68 @@ func TestCreateFailureDropsCurrentRecord(test *testing.T) {
 	}
 }
 
+func TestRotationContinuesAfterOldSegmentSyncFailure(test *testing.T) {
+	firstRecord := encodedRecord(slog.LevelInfo, "first")
+	secondRecord := encodedRecord(slog.LevelInfo, "second")
+	for _, testCase := range []struct {
+		name            string
+		maxSegmentBytes int64
+		advance         time.Duration
+	}{
+		{name: "size", maxSegmentBytes: firstRecord.Size() + 1},
+		{name: "date", maxSegmentBytes: 1 << 20, advance: 24 * time.Hour},
+	} {
+		test.Run(testCase.name, func(test *testing.T) {
+			current := time.Date(2026, 9, 17, 10, 11, 12, 0, time.UTC)
+			output, err := newWithClock(Options{
+				Directory: test.TempDir(), MaxSegmentBytes: testCase.maxSegmentBytes, MaxSegments: 2,
+			}, func() time.Time { return current })
+			if err != nil {
+				test.Fatal(err)
+			}
+			test.Cleanup(func() { _ = output.Close() })
+			if err := output.WriteRecord(firstRecord); err != nil {
+				test.Fatal(err)
+			}
+			store := output.storeForLevel(slog.LevelInfo)
+			previousFile := store.active
+			previousPath := store.activeSegment.path
+			if err := previousFile.Close(); err != nil {
+				test.Fatal(err)
+			}
+			if err := output.Sync(); !errors.Is(err, os.ErrClosed) {
+				test.Fatalf("active segment Sync error = %v, want %v", err, os.ErrClosed)
+			}
+
+			current = current.Add(testCase.advance)
+			if err := output.WriteRecord(secondRecord); err != nil {
+				test.Fatalf("successful write returned an old segment failure: %v", err)
+			}
+			if store.active == previousFile || store.activeSegment.path == previousPath {
+				test.Fatal("rotation did not replace the old segment")
+			}
+			if err := output.Sync(); err != nil {
+				test.Fatalf("new active segment Sync failed: %v", err)
+			}
+			if err := output.Close(); err != nil {
+				test.Fatal(err)
+			}
+			for path, record := range map[string]core.Record{
+				previousPath:             firstRecord,
+				store.activeSegment.path: secondRecord,
+			} {
+				data, err := os.ReadFile(path)
+				if err != nil {
+					test.Fatal(err)
+				}
+				if want := append(record.JSON(), '\n'); !bytes.Equal(data, want) {
+					test.Fatalf("segment %q = %q, want %q", path, data, want)
+				}
+			}
+		})
+	}
+}
+
 func TestCreateFailureWithoutActiveSegmentReturnsError(t *testing.T) {
 	directory := t.TempDir()
 	output, err := New(Options{Directory: directory})

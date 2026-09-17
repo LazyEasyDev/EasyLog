@@ -139,6 +139,68 @@ func TestHandlerPreservesWithAttrsAndGroups(t *testing.T) {
 	}
 }
 
+func TestHandlerIgnoresReservedAttributes(test *testing.T) {
+	var output, textOutput bytes.Buffer
+	directory := test.TempDir()
+	files, err := fileoutput.New(fileoutput.Options{Directory: directory})
+	if err != nil {
+		test.Fatal(err)
+	}
+	runtime := New(Options{MemoryMaxBytes: 1024}, []Output{
+		terminaloutput.NewJSON(&output),
+		terminaloutput.New(&textOutput, &terminaloutput.TextFormatter{
+			DisableColors:    true,
+			DisableTimestamp: true,
+			ShowLevel:        true,
+		}),
+		files,
+	})
+	test.Cleanup(func() { _ = runtime.Close() })
+	source := slog.NewRecord(time.Date(2026, time.September, 17, 10, 11, 12, 0, time.UTC), slog.LevelInfo, "event", 0)
+	source.AddAttrs(
+		slog.String(slog.TimeKey, "user time"),
+		slog.String(slog.LevelKey, "AUDIT"),
+		slog.String(slog.MessageKey, "user message"),
+		slog.String(slog.SourceKey, "user source"),
+		slog.String("request_id", "req-123"),
+		slog.String("request_id", "req-456"),
+	)
+	if err := runtime.Handler().Handle(context.Background(), source); err != nil {
+		test.Fatal(err)
+	}
+	records, err := runtime.Consumer().Take(0)
+	if err != nil || len(records) != 1 {
+		test.Fatalf("records=%d err=%v, want one record", len(records), err)
+	}
+	want := `{"time":"2026-09-17T10:11:12Z","level":"INFO","msg":"event","request_id":"req-123","request_id":"req-456"}`
+	if got := string(records[0].JSON()); got != want {
+		test.Errorf("memory record = %s, want %s", got, want)
+	}
+	if got := output.String(); got != want+"\n" {
+		test.Errorf("output = %q, want %q", got, want+"\n")
+	}
+	if got, wantText := textOutput.String(), "INFO event request_id=req-123 request_id=req-456\n"; got != wantText {
+		test.Errorf("terminal text = %q, want %q", got, wantText)
+	}
+	if err := runtime.Close(); err != nil {
+		test.Fatal(err)
+	}
+	entries, err := os.ReadDir(filepath.Join(directory, "logs"))
+	if err != nil || len(entries) != 1 {
+		test.Fatalf("file output entries=%d err=%v, want one segment", len(entries), err)
+	}
+	data, err := os.ReadFile(filepath.Join(directory, "logs", entries[0].Name()))
+	if err != nil {
+		test.Fatal(err)
+	}
+	if string(data) != want+"\n" {
+		test.Errorf("file record = %q, want %q", data, want+"\n")
+	}
+	if source.NumAttrs() != 6 {
+		test.Fatal("filtering changed the caller's record")
+	}
+}
+
 func TestEveryOutputAttemptedAndMemoryRetainedAfterFailure(t *testing.T) {
 	writeFailure := errors.New("write failed")
 	terminalFailure := &failingWriter{err: writeFailure}
@@ -253,7 +315,7 @@ func TestEncodingSupportsSourceReplaceAttrAndLogValuer(t *testing.T) {
 			return attr
 		},
 	}, nil)
-	runtime.Logger().Info("original", "lazy", staticLogValuer("resolved"))
+	runtime.Logger().Info("original", "lazy", staticLogValuer("resolved"), "source", "user source")
 
 	records, err := runtime.Consumer().Take(0)
 	if err != nil {

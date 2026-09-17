@@ -71,19 +71,76 @@ func (h *handler) WithGroup(name string) slog.Handler {
 
 func (h *handler) encode(ctx context.Context, record slog.Record) ([]byte, error) {
 	var buffer bytes.Buffer
+	replaceAttr := h.state.replaceAttr
+	if replaceAttr != nil {
+		replaceAttr = func(groups []string, attr slog.Attr) slog.Attr {
+			replacement := h.state.replaceAttr(groups, attr)
+			if len(groups) == 0 && !isReservedKey(attr.Key) {
+				return filterReservedAttr(replacement)
+			}
+			return replacement
+		}
+	}
 	var encoder slog.Handler = slog.NewJSONHandler(&buffer, &slog.HandlerOptions{
 		AddSource:   h.state.addSource,
-		ReplaceAttr: h.state.replaceAttr,
+		ReplaceAttr: replaceAttr,
 	})
+	grouped := false
+	ignoreAttrs := false
 	for _, operation := range h.operations {
 		if operation.group != "" {
+			if !grouped && isReservedKey(operation.group) {
+				ignoreAttrs = true
+				break
+			}
 			encoder = encoder.WithGroup(operation.group)
-		} else {
+			grouped = true
+		} else if grouped {
 			encoder = encoder.WithAttrs(operation.attrs)
+		} else {
+			encoder = encoder.WithAttrs(filterReservedAttrs(operation.attrs))
 		}
+	}
+	if !grouped {
+		filtered := slog.NewRecord(record.Time, record.Level, record.Message, record.PC)
+		if !ignoreAttrs {
+			record.Attrs(func(attr slog.Attr) bool {
+				filtered.AddAttrs(filterReservedAttr(attr))
+				return true
+			})
+		}
+		record = filtered
 	}
 	if err := encoder.Handle(ctx, record); err != nil {
 		return nil, err
 	}
 	return bytes.TrimSuffix(buffer.Bytes(), []byte{'\n'}), nil
+}
+
+func isReservedKey(key string) bool {
+	switch key {
+	case slog.TimeKey, slog.LevelKey, slog.MessageKey, slog.SourceKey:
+		return true
+	default:
+		return false
+	}
+}
+
+func filterReservedAttrs(attrs []slog.Attr) []slog.Attr {
+	filtered := make([]slog.Attr, len(attrs))
+	for index, attr := range attrs {
+		filtered[index] = filterReservedAttr(attr)
+	}
+	return filtered
+}
+
+func filterReservedAttr(attr slog.Attr) slog.Attr {
+	if isReservedKey(attr.Key) {
+		return slog.Attr{}
+	}
+	attr.Value = attr.Value.Resolve()
+	if attr.Key == "" && attr.Value.Kind() == slog.KindGroup {
+		attr.Value = slog.GroupValue(filterReservedAttrs(attr.Value.Group())...)
+	}
+	return attr
 }
