@@ -2,20 +2,15 @@ package terminal
 
 import (
 	"bytes"
-	"encoding/json"
-	"errors"
 	"fmt"
-	"io"
 	"log/slog"
 	"strconv"
 	"time"
 	"unicode"
-
-	"github.com/LazyEasyDev/EasyLog/internal/core"
 )
 
 // TextFormatter renders a level and timestamp prefix, a message, and key=value fields.
-// It changes presentation only; the encoded record is never modified.
+// It reads prepared attributes directly without decoding JSON or modifying the record.
 type TextFormatter struct {
 	// ForceColors emits ANSI colors even when terminal detection or environment checks disable them.
 	// The destination must already support ANSI escape sequences.
@@ -30,57 +25,48 @@ type TextFormatter struct {
 	ShowLevel bool
 }
 
-func (formatter TextFormatter) format(record core.Record, elapsed time.Duration) ([]byte, error) {
-	decoder := json.NewDecoder(bytes.NewReader(record.JSON()))
-	token, err := decoder.Token()
-	if err != nil {
-		return nil, err
-	}
-	if token != json.Delim('{') {
-		return nil, errors.New("terminal: expected a JSON object")
-	}
-
+func (formatter TextFormatter) format(record slog.Record, elapsed time.Duration) ([]byte, error) {
 	var buffer, levels, timestamps bytes.Buffer
 	color, reset := "", ""
 	if !formatter.DisableColors {
-		color, reset = levelColor(record.Level()), "\x1b[0m"
+		color, reset = levelColor(record.Level), "\x1b[0m"
 	}
 	separator := ""
 	if !formatter.DisableTimestamp && formatter.TimestampFormat == "" {
 		fmt.Fprintf(&timestamps, "[%04d]", max(int64(elapsed/time.Second), 0))
 	}
-	for decoder.More() {
-		token, err := decoder.Token()
-		if err != nil {
-			return nil, err
-		}
-		key := token.(string)
-		var value json.RawMessage
-		if err := decoder.Decode(&value); err != nil {
-			return nil, err
-		}
-		var text string
-		isString := len(value) > 0 && value[0] == '"' && json.Unmarshal(value, &text) == nil
-		switch key {
-		case slog.TimeKey:
+	var formatErr error
+	record.Attrs(func(attr slog.Attr) bool {
+		if attr.Key == slog.TimeKey {
 			if formatter.DisableTimestamp || formatter.TimestampFormat == "" {
-				continue
+				return true
 			}
-			if isString {
-				if timestamp, err := time.Parse(time.RFC3339Nano, text); err == nil {
-					formatted := strconv.Quote(timestamp.Format(formatter.TimestampFormat))
-					if timestamps.Len() > 0 {
-						timestamps.WriteByte(' ')
-					}
-					timestamps.WriteByte('[')
-					timestamps.WriteString(formatted[1 : len(formatted)-1])
-					timestamps.WriteByte(']')
-					continue
+			var timestamp time.Time
+			var valid bool
+			switch attr.Value.Kind() {
+			case slog.KindTime:
+				timestamp, valid = attr.Value.Time(), true
+			case slog.KindString:
+				var err error
+				timestamp, err = time.Parse(time.RFC3339Nano, attr.Value.String())
+				valid = err == nil
+			}
+			if valid {
+				formatted := strconv.Quote(timestamp.Format(formatter.TimestampFormat))
+				if timestamps.Len() > 0 {
+					timestamps.WriteByte(' ')
 				}
+				timestamps.WriteByte('[')
+				timestamps.WriteString(formatted[1 : len(formatted)-1])
+				timestamps.WriteByte(']')
+				return true
 			}
+		}
+		text, isString := textValue(attr.Value)
+		switch attr.Key {
 		case slog.LevelKey:
 			if !formatter.ShowLevel {
-				continue
+				return true
 			}
 			if levels.Len() > 0 {
 				levels.WriteByte(' ')
@@ -94,11 +80,11 @@ func (formatter TextFormatter) format(record core.Record, elapsed time.Duration)
 					text = "ERRO"
 				}
 				writeTextString(&levels, text)
-			} else if err := json.Compact(&levels, value); err != nil {
-				return nil, err
+			} else if formatErr = writeJSONValue(&levels, attr.Value); formatErr != nil {
+				return false
 			}
 			levels.WriteString(reset)
-			continue
+			return true
 		case slog.MessageKey:
 			if isString {
 				if text != "" {
@@ -106,26 +92,24 @@ func (formatter TextFormatter) format(record core.Record, elapsed time.Duration)
 					writeMessageString(&buffer, text)
 					separator = " "
 				}
-				continue
+				return true
 			}
 		}
 		buffer.WriteString(separator)
 		buffer.WriteString(color)
-		writeTextString(&buffer, key)
+		writeTextString(&buffer, attr.Key)
 		buffer.WriteString(reset)
 		buffer.WriteByte('=')
 		if isString {
 			writeTextString(&buffer, text)
-		} else if err := json.Compact(&buffer, value); err != nil {
-			return nil, err
+		} else if formatErr = writeJSONValue(&buffer, attr.Value); formatErr != nil {
+			return false
 		}
 		separator = " "
-	}
-	if _, err := decoder.Token(); err != nil {
-		return nil, err
-	}
-	if _, err := decoder.Token(); err != io.EOF {
-		return nil, errors.New("terminal: unexpected trailing JSON data")
+		return true
+	})
+	if formatErr != nil {
+		return nil, formatErr
 	}
 	var output bytes.Buffer
 	output.Grow(levels.Len() + timestamps.Len() + buffer.Len() + 2)

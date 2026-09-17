@@ -18,7 +18,7 @@ func TestRuntimeSyncWaitsForWrite(test *testing.T) {
 	test.Cleanup(unblock)
 	syncCalled := make(chan struct{}, 1)
 	output := &lifecycleTestOutput{
-		writeRecord: func(Record) error {
+		writeRecord: func(slog.Record, []byte) error {
 			close(entered)
 			<-release
 			return nil
@@ -160,7 +160,7 @@ func TestRuntimeLateEncodingCannotWriteAfterClose(test *testing.T) {
 	writes := 0
 	closes := 0
 	output := &lifecycleTestOutput{
-		writeRecord: func(Record) error {
+		writeRecord: func(slog.Record, []byte) error {
 			writes++
 			return nil
 		},
@@ -202,14 +202,14 @@ func TestRuntimeLateEncodingCannotWriteAfterClose(test *testing.T) {
 }
 
 type lifecycleTestOutput struct {
-	writeRecord func(Record) error
+	writeRecord func(slog.Record, []byte) error
 	syncOutput  func() error
 	closeOutput func() error
 }
 
-func (output *lifecycleTestOutput) WriteRecord(record Record) error {
+func (output *lifecycleTestOutput) WriteRecord(record slog.Record, jsonContent []byte) error {
 	if output.writeRecord != nil {
-		return output.writeRecord(record)
+		return output.writeRecord(record, jsonContent)
 	}
 	return nil
 }

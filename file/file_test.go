@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"errors"
+	"io"
 	"log/slog"
 	"os"
 	"path/filepath"
@@ -12,8 +13,6 @@ import (
 	"strings"
 	"testing"
 	"time"
-
-	"github.com/LazyEasyDev/EasyLog/internal/core"
 )
 
 func TestDefaultOptions(t *testing.T) {
@@ -198,14 +197,187 @@ func TestSegmentNamesIgnoreTimeOfDay(t *testing.T) {
 	}
 }
 
-func TestWriteAllHandlesShortWrites(t *testing.T) {
+func TestWriteLineHandlesShortWrites(t *testing.T) {
 	writer := &shortWriter{limit: 2}
-	written, err := writeAll(writer, []byte("abcdef"))
+	_, jsonContent := encodedRecord(slog.LevelInfo, "event")
+	jsonLine := []byte(string(jsonContent) + "\n")
+	written, err := writeLine(writer, jsonLine)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if written != 6 || writer.String() != "abcdef" {
+	if written != len(jsonLine) || writer.String() != string(jsonLine) {
 		t.Fatalf("written=%d data=%q", written, writer.String())
+	}
+}
+
+func TestWriteLinePreservesBytes(test *testing.T) {
+	line := `{"msg":"event"}` + "\n"
+	for _, testCase := range []struct {
+		name string
+		data []byte
+		want string
+	}{
+		{name: "object", data: []byte(line), want: line},
+		{name: "newline", data: []byte("\n"), want: "\n"},
+		{name: "empty", data: []byte{}, want: "\n"},
+		{name: "nil", want: "\n"},
+	} {
+		test.Run(testCase.name, func(test *testing.T) {
+			original := bytes.Clone(testCase.data)
+			for range 3 {
+				var output bytes.Buffer
+				var calls int
+				writer := lineWriterFunc(func(data []byte) (int, error) {
+					calls++
+					return output.Write(data)
+				})
+				written, err := writeLine(writer, testCase.data)
+				if err != nil || written != len(testCase.want) || calls != 1 || output.String() != testCase.want {
+					test.Fatalf("written=%d calls=%d output=%q err=%v, want one write of %q", written, calls, output.String(), err, testCase.want)
+				}
+				if !bytes.Equal(testCase.data, original) {
+					test.Fatal("writing changed the input bytes")
+				}
+			}
+		})
+	}
+}
+
+func TestWriteLineReturnsWrittenBytesAndErrors(test *testing.T) {
+	writeFailure := errors.New("write failed")
+	line := `{"msg":"event"}` + "\n"
+	data := []byte(line)
+	for _, testCase := range []struct {
+		name      string
+		limit     int
+		writeErr  error
+		wantErr   error
+		wantBytes int
+	}{
+		{name: "short", limit: 3, wantBytes: len(line)},
+		{name: "zero_progress", wantErr: io.ErrShortWrite},
+		{name: "partial_error", limit: 4, writeErr: writeFailure, wantErr: writeFailure, wantBytes: 4},
+		{name: "zero_error", writeErr: writeFailure, wantErr: writeFailure},
+		{name: "full_error", limit: len(line), writeErr: writeFailure, wantErr: writeFailure, wantBytes: len(line)},
+	} {
+		test.Run(testCase.name, func(test *testing.T) {
+			var output bytes.Buffer
+			var calls int
+			writer := lineWriterFunc(func(data []byte) (int, error) {
+				calls++
+				written, err := output.Write(data[:min(len(data), testCase.limit)])
+				if err != nil {
+					return written, err
+				}
+				return written, testCase.writeErr
+			})
+			written, err := writeLine(writer, data)
+			if !errors.Is(err, testCase.wantErr) || written != testCase.wantBytes || output.String() != line[:testCase.wantBytes] {
+				test.Fatalf("written=%d output=%q err=%v, want %d bytes and %v", written, output.String(), err, testCase.wantBytes, testCase.wantErr)
+			}
+			if testCase.wantErr != nil && calls != 1 {
+				test.Fatalf("retried failed write %d times", calls)
+			}
+		})
+	}
+}
+
+func TestWriteLineDoesNotAllocate(test *testing.T) {
+	line := []byte(`{"msg":"event"}` + "\n")
+	allocations := testing.AllocsPerRun(100, func() {
+		if _, err := writeLine(io.Discard, line); err != nil {
+			test.Fatal(err)
+		}
+	})
+	if allocations != 0 {
+		test.Fatalf("allocations per write = %v, want zero", allocations)
+	}
+}
+
+type lineWriterFunc func([]byte) (int, error)
+
+func (write lineWriterFunc) Write(data []byte) (int, error) {
+	return write(data)
+}
+
+func TestOutputCountsNewlinesForRotation(test *testing.T) {
+	record, jsonContent := encodedRecord(slog.LevelInfo, "event")
+	contentStorage := append(bytes.Clone(jsonContent), '!')
+	jsonContent = contentStorage[:len(jsonContent)]
+	original := bytes.Clone(contentStorage)
+	jsonLine := []byte(string(jsonContent) + "\n")
+	lineBytes := int64(len(jsonLine))
+	output, err := newWithClock(Options{
+		Directory: test.TempDir(), MaxSegmentBytes: 2 * lineBytes, MaxSegments: 2,
+	}, func() time.Time { return time.Date(2026, 9, 17, 0, 0, 0, 0, time.UTC) })
+	if err != nil {
+		test.Fatal(err)
+	}
+	test.Cleanup(func() { _ = output.Close() })
+	if err := output.WriteRecord(record, jsonContent); err != nil {
+		test.Fatal(err)
+	}
+	lineBuffer := &output.lineBuffer[0]
+	store := output.storeForLevel(slog.LevelInfo)
+	previousPath := store.activeSegment.path
+	if store.activeBytes != lineBytes {
+		test.Fatalf("active bytes = %d, want %d", store.activeBytes, lineBytes)
+	}
+	if err := output.WriteRecord(record, jsonContent); err != nil {
+		test.Fatal(err)
+	}
+	if store.activeSegment.path != previousPath || store.activeBytes != 2*lineBytes {
+		test.Fatal("record exactly filling the segment rotated or used the wrong byte count")
+	}
+	if err := output.WriteRecord(record, jsonContent); err != nil {
+		test.Fatal(err)
+	}
+	if store.activeSegment.path == previousPath || store.activeBytes != lineBytes {
+		test.Fatal("record exceeding the segment threshold did not rotate with the correct byte count")
+	}
+	if &output.lineBuffer[0] != lineBuffer {
+		test.Fatal("file output did not reuse its framing buffer")
+	}
+	if !bytes.Equal(contentStorage, original) {
+		test.Fatal("file framing changed the shared JSON storage")
+	}
+	if err := output.Close(); err != nil {
+		test.Fatal(err)
+	}
+	for path, count := range map[string]int{previousPath: 2, store.activeSegment.path: 1} {
+		data, err := os.ReadFile(path)
+		if err != nil {
+			test.Fatal(err)
+		}
+		want := bytes.Repeat(jsonLine, count)
+		if !bytes.Equal(data, want) {
+			test.Fatalf("segment data = %q, want %q", data, want)
+		}
+	}
+}
+
+func TestOutputReleasesLargeFramingBuffer(test *testing.T) {
+	output, err := New(Options{Directory: test.TempDir()})
+	if err != nil {
+		test.Fatal(err)
+	}
+	test.Cleanup(func() { _ = output.Close() })
+	record, jsonContent := encodedRecord(slog.LevelInfo, strings.Repeat("x", maxLineBufferBytes+1))
+	if err := output.WriteRecord(record, jsonContent); err != nil {
+		test.Fatal(err)
+	}
+	if cap(output.lineBuffer) != 0 {
+		test.Fatalf("retained framing buffer capacity = %d, want zero", cap(output.lineBuffer))
+	}
+	if size := output.storeForLevel(slog.LevelInfo).activeBytes; size != int64(len(jsonContent)+1) {
+		test.Fatalf("active bytes = %d, want %d", size, len(jsonContent)+1)
+	}
+	record, jsonContent = encodedRecord(slog.LevelInfo, "next")
+	if err := output.WriteRecord(record, jsonContent); err != nil {
+		test.Fatal(err)
+	}
+	if string(output.lineBuffer) != string(jsonContent)+"\n" {
+		test.Fatalf("next framed record = %q", output.lineBuffer)
 	}
 }
 
@@ -239,13 +411,14 @@ func TestWriteFailureRetiresActiveSegment(t *testing.T) {
 }
 
 func TestCreateFailureDropsCurrentRecord(test *testing.T) {
-	firstRecord := encodedRecord(slog.LevelInfo, "first")
+	_, firstContent := encodedRecord(slog.LevelInfo, "first")
+	firstLine := []byte(string(firstContent) + "\n")
 	for _, testCase := range []struct {
 		name            string
 		maxSegmentBytes int64
 		advance         time.Duration
 	}{
-		{name: "size", maxSegmentBytes: firstRecord.Size() + 1},
+		{name: "size", maxSegmentBytes: int64(len(firstLine))},
 		{name: "date", maxSegmentBytes: 1 << 20, advance: 24 * time.Hour},
 	} {
 		test.Run(testCase.name, func(test *testing.T) {
@@ -283,7 +456,7 @@ func TestCreateFailureDropsCurrentRecord(test *testing.T) {
 			if err != nil {
 				test.Fatal(err)
 			}
-			if !bytes.Equal(data, append(firstRecord.JSON(), '\n')) {
+			if !bytes.Equal(data, firstLine) {
 				test.Fatalf("failed rotation changed the active segment: %q", data)
 			}
 
@@ -301,7 +474,8 @@ func TestCreateFailureDropsCurrentRecord(test *testing.T) {
 			if err != nil {
 				test.Fatal(err)
 			}
-			want := append(encodedRecord(slog.LevelInfo, "recovered").JSON(), '\n')
+			_, content := encodedRecord(slog.LevelInfo, "recovered")
+			want := []byte(string(content) + "\n")
 			if !bytes.Equal(data, want) {
 				test.Fatalf("recovered segment data = %q, want %q", data, want)
 			}
@@ -310,14 +484,16 @@ func TestCreateFailureDropsCurrentRecord(test *testing.T) {
 }
 
 func TestRotationContinuesAfterOldSegmentSyncFailure(test *testing.T) {
-	firstRecord := encodedRecord(slog.LevelInfo, "first")
-	secondRecord := encodedRecord(slog.LevelInfo, "second")
+	firstRecord, firstContent := encodedRecord(slog.LevelInfo, "first")
+	secondRecord, secondContent := encodedRecord(slog.LevelInfo, "second")
+	firstLine := []byte(string(firstContent) + "\n")
+	secondLine := []byte(string(secondContent) + "\n")
 	for _, testCase := range []struct {
 		name            string
 		maxSegmentBytes int64
 		advance         time.Duration
 	}{
-		{name: "size", maxSegmentBytes: firstRecord.Size() + 1},
+		{name: "size", maxSegmentBytes: int64(len(firstLine))},
 		{name: "date", maxSegmentBytes: 1 << 20, advance: 24 * time.Hour},
 	} {
 		test.Run(testCase.name, func(test *testing.T) {
@@ -329,7 +505,7 @@ func TestRotationContinuesAfterOldSegmentSyncFailure(test *testing.T) {
 				test.Fatal(err)
 			}
 			test.Cleanup(func() { _ = output.Close() })
-			if err := output.WriteRecord(firstRecord); err != nil {
+			if err := output.WriteRecord(firstRecord, firstContent); err != nil {
 				test.Fatal(err)
 			}
 			store := output.storeForLevel(slog.LevelInfo)
@@ -343,7 +519,7 @@ func TestRotationContinuesAfterOldSegmentSyncFailure(test *testing.T) {
 			}
 
 			current = current.Add(testCase.advance)
-			if err := output.WriteRecord(secondRecord); err != nil {
+			if err := output.WriteRecord(secondRecord, secondContent); err != nil {
 				test.Fatalf("successful write returned an old segment failure: %v", err)
 			}
 			if store.active == previousFile || store.activeSegment.path == previousPath {
@@ -355,15 +531,15 @@ func TestRotationContinuesAfterOldSegmentSyncFailure(test *testing.T) {
 			if err := output.Close(); err != nil {
 				test.Fatal(err)
 			}
-			for path, record := range map[string]core.Record{
-				previousPath:             firstRecord,
-				store.activeSegment.path: secondRecord,
+			for path, want := range map[string][]byte{
+				previousPath:             firstLine,
+				store.activeSegment.path: secondLine,
 			} {
 				data, err := os.ReadFile(path)
 				if err != nil {
 					test.Fatal(err)
 				}
-				if want := append(record.JSON(), '\n'); !bytes.Equal(data, want) {
+				if !bytes.Equal(data, want) {
 					test.Fatalf("segment %q = %q, want %q", path, data, want)
 				}
 			}
@@ -684,12 +860,15 @@ func writeMessage(t *testing.T, output *Output, level slog.Level, message string
 	}
 }
 
-func encodedRecord(level slog.Level, message string) core.Record {
-	data, _ := json.Marshal(map[string]string{
+func encodedRecord(level slog.Level, message string) (slog.Record, []byte) {
+	var buffer bytes.Buffer
+	_ = json.NewEncoder(&buffer).Encode(map[string]string{
 		"level": level.String(),
 		"msg":   message,
 	})
-	return core.NewRecord(level, data)
+	record := slog.NewRecord(time.Time{}, level, message, 0)
+	record.AddAttrs(slog.String(slog.LevelKey, level.String()), slog.String(slog.MessageKey, message))
+	return record, buffer.Bytes()[:buffer.Len()-1]
 }
 
 func matchingFiles(t *testing.T, directory string, pattern interface{ MatchString(string) bool }) []string {

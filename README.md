@@ -1,8 +1,9 @@
 # EasyLog
 
 EasyLog is a small synchronous backend for Go's
-[`log/slog`](https://pkg.go.dev/log/slog). It encodes structured JSON once and
-delivers it to configurable outputs and an optional bounded memory queue.
+[`log/slog`](https://pkg.go.dev/log/slog). It prepares structured fields once and
+delivers them with a shared JSON encoding to configurable outputs. An optional
+bounded memory queue retains JSON snapshots.
 Built-in outputs render readable terminal text and write rotating JSON files.
 Explicit NDJSON output to a writer is also available.
 
@@ -120,6 +121,48 @@ so they do not bypass the rule. A reserved top-level group, including one opened
 with `WithGroup`, is ignored with all of its attributes; attributes bound before
 entering that group remain intact.
 
+## Record Processing
+
+The handler adds context enrichers and prepares bound and call-site attributes,
+groups, reserved-key filtering, `LogValuer` resolution, and `ReplaceAttr` results.
+The prepared `slog.Record` carries all final display fields in `Attrs()`, including
+metadata. Its fixed `Time`, `Level`, `Message`, and `PC` fields keep the original
+event metadata for routing and inspection. Formatters use the prepared attributes
+so metadata renaming or removal is honored consistently.
+
+The runtime encodes those display fields once, before acquiring the output lock,
+and passes `WriteRecord(record, jsonContent)` to every output in order. The JSON
+content is one object without a trailing newline. Text output
+formats the prepared attributes directly; it does not copy or decode the JSON
+content. JSON is still encoded once even for a text-only runtime. Opaque custom
+values are captured during preparation as strings or `json.RawMessage`, so user
+marshalers are not invoked again by each output. Nested groups stay structured.
+
+Each runtime uses a `sync.Pool` of temporary JSON handlers and buffers. Encoding
+borrows an encoder exclusively and copies the JSON object, excluding the encoder's
+trailing newline, into independently owned bytes before returning the encoder.
+Outputs may retain the prepared record and JSON content but must treat them as
+read-only. Their storage is shared with other outputs and memory, and is not
+recycled for later log calls.
+
+Built-in file and explicit JSON-terminal outputs add one newline using their own
+reusable buffers under their output locks. This copies the content per JSON
+destination, without changing the shared bytes, and normally writes a complete
+line in one `Write` call. These framing buffers are reused when their capacity
+is at most 64 KiB; larger buffers are released after writing. Memory retains the
+JSON content directly, without a custom record wrapper or another copy. The
+memory budget excludes output-added newlines; file rotation counts them.
+Underlying writers must not modify or retain the supplied bytes, as required
+by Go's `io.Writer` contract. Short writes still finish the remaining bytes,
+and partial-write errors are returned without replaying the record.
+
+Scratch buffers whose capacity exceeds 64 KiB release their backing storage
+before returning to the pool. This does not limit record size or total memory
+usage, and `sync.Pool` may discard entries during garbage collection. Bound
+`With` attributes are still processed per record, preserving the existing
+`LogValuer` and `ReplaceAttr` callback behavior; their encoded values are not
+cached.
+
 ## Terminal Display
 
 Terminal output uses text by default. A nil `Terminal.Formatter` or
@@ -201,10 +244,10 @@ With an empty layout, the same text output starts like this:
 INFO[0000] application started address=:8080
 ```
 
-File output and memory records always retain the original JSON, including the
-full timestamp and level. Display attributes use the already-encoded fields, so
-formatting does not evaluate attributes again. Nested objects and arrays remain
-JSON within the text line; other fields keep their order, including duplicates.
+File output and memory retain the finalized JSON; terminal display flags do not
+remove its timestamp or level. Display attributes use the same prepared fields
+as JSON encoding, without evaluating user callbacks again. Nested objects and
+arrays remain JSON within the text line; other fields keep their order, including duplicates.
 Message spaces, quotes, and backslashes are preserved. Control characters in
 messages and timestamp layouts are escaped to keep each record on one line;
 structured string fields are still quoted when needed.
@@ -247,33 +290,45 @@ if err := easylog.InitWithOutputs(easylog.Options{}, []easylog.Output{
 defer easylog.Close()
 ```
 
-`NewJSON` bypasses text formatting, preserves the encoded JSON, and appends one
-newline per record. Both terminal constructors default a nil writer to
+`NewJSON` bypasses text formatting and writes the supplied JSON content followed
+by one newline. Both terminal constructors default a nil writer to
 `os.Stderr`; `InitOptions.Terminal` with a nil writer still disables output.
 Existing one-argument `terminal.New(writer)` calls must become
 `terminal.New(writer, nil)` for default text or `terminal.NewJSON(writer)` to
 keep their previous NDJSON behavior.
 
-## Memory Queue
+## Memory Retention
 
-When memory retention is enabled, `Consumer` provides destructive FIFO reads:
+When memory retention is enabled, `Consumer` provides destructive FIFO reads,
+the retained record count, and the JSON byte total:
 
 ```go
-consumer := easylog.Consumer()
-if consumer != nil {
-	records, err := consumer.Take(100)
-	if err != nil {
-		return err
-	}
-	for _, record := range records {
-		process(record.JSON())
-	}
+type MemoryConsumer interface {
+	Take(pageSize int) ([][]byte, error)
+	Len() int
+	Bytes() int64
 }
 ```
 
-`Take` returns immediately. `Take(0)` drains all available records. When the
-limit is reached, the oldest records are evicted; a record larger than the
-entire limit is not retained. Terminal and file output are unaffected.
+`Take(n)` removes up to `n` oldest records; `Take(0)` drains all available records.
+A negative page size returns `ErrInvalidPageSize` without changing the queue.
+An empty queue returns `nil, nil`. `Take` does not wait for new records or for
+output writes to finish.
+
+Each returned `[]byte` is one JSON object without a trailing newline, not a
+custom record wrapper. `Take` copies each object's bytes because outputs may
+still be using the shared encoding. Returned slices may be retained or modified
+without affecting outputs, other returned records, or the queue. Consumed records
+are removed from both `Len()` and `Bytes()` under the memory lock.
+
+The `[][]byte` result is a batch of encoded objects, not an encoded JSON array.
+To marshal a batch as a JSON array, use `json.RawMessage` elements; marshaling
+`[][]byte` directly would encode each element as a base64 string.
+
+Memory stores JSON byte slices directly, without trailing newlines. `Bytes()`
+counts their JSON bytes, not total heap usage. When the limit is reached, the
+oldest records are evicted; a record larger than the entire limit is not retained
+and does not evict existing records. Terminal and file output are unaffected.
 
 ## File Output
 
@@ -392,22 +447,35 @@ Any type implementing this interface can be included in the output slice:
 
 ```go
 type Output interface {
-	WriteRecord(Record) error
+	WriteRecord(record slog.Record, jsonContent []byte) error
 	Sync() error
 	Close() error
 }
 ```
 
-External implementations use `easylog.Record` as the `WriteRecord` parameter.
-No internal-package imports or slog handler implementation are required.
-`Record.Level()` provides severity, and `Record.JSON()` returns a copy of the
-encoded JSON object without a trailing newline. Outputs may retain the record.
+External implementations import `log/slog`; no internal-package imports or slog
+handler implementation are required.
+
+- Use `record.Level` for the original severity, including file routing.
+- Use `record.Attrs()` for final display fields, including replaced metadata,
+	bound `With` fields, and nested groups. Do not run `ReplaceAttr` or `LogValuer`
+	again. The fixed `record.Message` is the original message, not necessarily the
+	displayed value after replacement.
+- `jsonContent` is one JSON object without a trailing newline. Destinations add
+	their own framing or separators; NDJSON outputs add one newline. Text
+	destinations can ignore this argument.
+- Both arguments may be retained without copying but must not be modified. In
+	particular, attribute groups, opaque JSON values, and `jsonContent` have storage
+	shared with other outputs and memory. Do not append a newline into the shared
+	slice's backing array. Make independent copies before modifying shared data;
+	`slog.Record.Clone()` alone does not deep-copy nested values.
 
 `Sync` flushes output-owned buffers and synchronizes storage where supported.
 `Close` finishes pending work, releases only output-owned resources, and must
-be safe to call more than once. The terminal output has no owned buffers or
-resources, so its `Sync` and `Close` methods are no-ops. If its caller-provided
-writer buffers data, the caller must flush and close that writer separately.
+be safe to call more than once. The terminal output has no pending buffered
+writes or owned OS resources, so its `Sync` and `Close` methods are no-ops.
+If its caller-provided writer buffers data, the caller must flush and close
+that writer separately.
 
 ## Lifecycle
 
@@ -426,9 +494,9 @@ first call waits for shutdown and returns close errors. `Close` does not call
 Stop and join log producers before syncing or closing. Enrichers and encoding
 already in progress are not awaited by `Close`: their records may still reach
 memory retention but cannot start output writes after shutdown begins. Retained
-records remain available through an independent runtime's `Consumer()` after
-close. Output methods must not reenter logging, `Sync`, or `Close` on the same
-runtime.
+records can still be drained through an independent runtime's `Consumer()` after
+close, or through a consumer captured before package-level `Close()`. Output
+methods must not reenter logging, `Sync`, or `Close` on the same runtime.
 
 The package-level `Sync()` delegates to the current runtime without holding the
 package lock during output I/O. It returns nil when no runtime is installed; if
@@ -466,3 +534,9 @@ Run the example and tests with:
 go run ./main
 go test -race ./...
 ```
+
+## Benchmarks
+
+See the [benchmark suite and local results](benchmarks/README.md) for comparisons
+with standard `slog`, Zap, and Zap Sugared. The benchmarks use a separate Go
+module, leaving production dependencies unchanged, and must be run explicitly.

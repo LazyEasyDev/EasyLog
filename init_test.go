@@ -135,9 +135,8 @@ func TestInitInstallsDefaultAndCloseRestoresIt(t *testing.T) {
 	if !bytes.HasPrefix(terminalData.Bytes(), []byte("INFO[")) || !bytes.HasSuffix(terminalData.Bytes(), []byte("] initialized answer=42\n")) {
 		t.Fatalf("terminal output = %q", terminalData.Bytes())
 	}
-	records, err := Consumer().Take(0)
-	if err != nil || len(records) != 1 {
-		t.Fatalf("memory records = %d, error = %v", len(records), err)
+	if count := Consumer().Len(); count != 1 {
+		t.Fatalf("memory records = %d, want one record", count)
 	}
 
 	if err := Close(); err != nil {
@@ -454,7 +453,7 @@ func TestInitWithOutputsRejectsWithoutTouchingOutputs(test *testing.T) {
 
 			calls := 0
 			output := &lifecycleTestOutput{
-				writeRecord: func(Record) error { calls++; return nil },
+				writeRecord: func(slog.Record, []byte) error { calls++; return nil },
 				syncOutput:  func() error { calls++; return nil },
 				closeOutput: func() error { calls++; return nil },
 			}

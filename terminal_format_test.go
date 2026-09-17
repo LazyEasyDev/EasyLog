@@ -94,17 +94,9 @@ func TestInitTerminalFormatterOnlyChangesDisplay(test *testing.T) {
 			if !regexp.MustCompile("^" + testCase.pattern + "$").Match(destination.Bytes()) {
 				test.Fatalf("terminal output = %q, want pattern %q", destination.String(), testCase.pattern)
 			}
-			records, err := easylog.Consumer().Take(0)
-			if err != nil || len(records) != 1 {
-				test.Fatalf("memory records=%d error=%v, want one record", len(records), err)
-			}
-			data := records[0].JSON()
-			var decoded map[string]any
-			if err := json.Unmarshal(data, &decoded); err != nil {
-				test.Fatal(err)
-			}
-			if decoded["time"] != timestamp.Format(time.RFC3339Nano) || decoded["level"] != "WARN" || decoded["msg"] != "application started" || decoded["service"] != "api" {
-				test.Fatalf("terminal formatting changed memory JSON: %s", data)
+			consumer := easylog.Consumer()
+			if count := consumer.Len(); count != 1 {
+				test.Fatalf("memory records=%d, want one record", count)
 			}
 			if err := easylog.Close(); err != nil {
 				test.Fatal(err)
@@ -120,8 +112,19 @@ func TestInitTerminalFormatterOnlyChangesDisplay(test *testing.T) {
 			if err != nil {
 				test.Fatal(err)
 			}
-			if !bytes.Equal(fileData, append(data, '\n')) {
-				test.Fatalf("file output differs from retained JSON: %q", fileData)
+			if bytes.Count(fileData, []byte{'\n'}) != 1 || !bytes.HasSuffix(fileData, []byte{'\n'}) {
+				test.Fatalf("file output is not one complete JSON line: %q", fileData)
+			}
+			data := bytes.TrimSuffix(fileData, []byte{'\n'})
+			var decoded map[string]any
+			if err := json.Unmarshal(data, &decoded); err != nil {
+				test.Fatal(err)
+			}
+			if decoded["time"] != timestamp.Format(time.RFC3339Nano) || decoded["level"] != "WARN" || decoded["msg"] != "application started" || decoded["service"] != "api" {
+				test.Fatalf("terminal formatting changed JSON: %s", data)
+			}
+			if size := consumer.Bytes(); size != int64(len(data)) {
+				test.Fatalf("memory bytes=%d, want %d", size, len(data))
 			}
 		})
 	}

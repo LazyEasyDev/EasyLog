@@ -7,12 +7,10 @@ import (
 	"log/slog"
 	"testing"
 	"time"
-
-	"github.com/LazyEasyDev/EasyLog/internal/core"
 )
 
 func TestTextFormatterOptions(test *testing.T) {
-	record := core.NewRecord(slog.LevelInfo, []byte(`{"time":"2026-09-16T10:11:12.123456789+02:00","level":"INFO","msg":"hello world","answer":42}`))
+	record := recordFromJSONFixture(slog.LevelInfo, []byte(`{"time":"2026-09-16T10:11:12.123456789+02:00","level":"INFO","msg":"hello world","answer":42}`))
 	for _, testCase := range []struct {
 		name      string
 		formatter TextFormatter
@@ -76,7 +74,7 @@ func TestTextFormatterOptions(test *testing.T) {
 }
 
 func TestTextFormatterElapsedTime(test *testing.T) {
-	record := core.NewRecord(slog.LevelInfo, []byte(`{"time":"2000-01-01T00:00:00Z","msg":"event"}`))
+	record := recordFromJSONFixture(slog.LevelInfo, []byte(`{"time":"2000-01-01T00:00:00Z","msg":"event"}`))
 	formatter := TextFormatter{DisableColors: true}
 	for _, testCase := range []struct {
 		name    string
@@ -112,7 +110,7 @@ func TestTextFormatterElapsedIgnoresRecordTime(test *testing.T) {
 		`{"msg":"event"}`,
 	} {
 		test.Run(data, func(test *testing.T) {
-			record := core.NewRecord(slog.LevelInfo, []byte(data))
+			record := recordFromJSONFixture(slog.LevelInfo, []byte(data))
 			formatted, err := formatter.format(record, 12*time.Second)
 			if err != nil {
 				test.Fatal(err)
@@ -120,9 +118,7 @@ func TestTextFormatterElapsedIgnoresRecordTime(test *testing.T) {
 			if want := "[0012] event\n"; string(formatted) != want {
 				test.Fatalf("output = %q, want %q", formatted, want)
 			}
-			if string(record.JSON()) != data {
-				test.Fatal("elapsed formatting changed the record")
-			}
+			assertRecordMatchesJSONFixture(test, record, data)
 		})
 	}
 }
@@ -140,7 +136,7 @@ func TestTextOutputElapsedStartsAtConstruction(test *testing.T) {
 		}
 	}
 	older.startedAt = older.startedAt.Add(-12 * time.Second)
-	record := core.NewRecord(slog.LevelInfo, []byte(`{"time":"2000-01-01T00:00:00Z","msg":"event"}`))
+	record := recordFromJSONFixture(slog.LevelInfo, []byte(`{"time":"2000-01-01T00:00:00Z","msg":"event"}`))
 	for _, testCase := range []struct {
 		name   string
 		output *Output
@@ -151,7 +147,7 @@ func TestTextOutputElapsedStartsAtConstruction(test *testing.T) {
 	} {
 		test.Run(testCase.name, func(test *testing.T) {
 			minimum := int64(time.Since(testCase.output.startedAt) / time.Second)
-			if err := testCase.output.WriteRecord(record); err != nil {
+			if err := testCase.output.WriteRecord(record, nil); err != nil {
 				test.Fatal(err)
 			}
 			maximum := int64(time.Since(testCase.output.startedAt) / time.Second)
@@ -170,19 +166,17 @@ func TestTextOutputElapsedStartsAtConstruction(test *testing.T) {
 }
 
 func TestTextFormatterPreservesFieldsAndRecord(test *testing.T) {
-	data := []byte(`{"level":"WARN","msg":"line\n\u001b[31m","key with space":"a=b","id":9007199254740993,"service":"api","service":"worker","request":{"time":"nested","level":"nested","ok":true},"items":[1,null,"two"]}`)
-	record := core.NewRecord(slog.LevelWarn, data)
+	data := `{"level":"WARN","msg":"line\n\u001b[31m","key with space":"a=b","id":9007199254740993,"service":"api","service":"worker","request":{"time":"nested","level":"nested","ok":true},"items":[1,null,"two"]}`
+	record := recordFromJSONFixture(slog.LevelWarn, []byte(data))
 	var destination bytes.Buffer
-	if err := New(&destination, &TextFormatter{DisableColors: true, DisableTimestamp: true}).WriteRecord(record); err != nil {
+	if err := New(&destination, &TextFormatter{DisableColors: true, DisableTimestamp: true}).WriteRecord(record, nil); err != nil {
 		test.Fatal(err)
 	}
 	want := "line\\n\\x1b[31m \"key with space\"=\"a=b\" id=9007199254740993 service=api service=worker request={\"time\":\"nested\",\"level\":\"nested\",\"ok\":true} items=[1,null,\"two\"]\n"
 	if destination.String() != want {
 		test.Fatalf("output = %q, want %q", destination.String(), want)
 	}
-	if !bytes.Equal(record.JSON(), data) {
-		test.Fatal("formatting changed the encoded record")
-	}
+	assertRecordMatchesJSONFixture(test, record, data)
 }
 
 func TestTextFormatterMessageStrings(test *testing.T) {
@@ -205,8 +199,8 @@ func TestTextFormatterMessageStrings(test *testing.T) {
 			if err != nil {
 				test.Fatal(err)
 			}
-			encoded := []byte(fmt.Sprintf(`{"level":"INFO","msg":%s,"answer":42}`, message))
-			record := core.NewRecord(slog.LevelInfo, encoded)
+			encoded := fmt.Sprintf(`{"level":"INFO","msg":%s,"answer":42}`, message)
+			record := recordFromJSONFixture(slog.LevelInfo, []byte(encoded))
 			formatter := TextFormatter{DisableColors: true, ShowLevel: true}
 			data, err := formatter.format(record, 12*time.Second)
 			if err != nil {
@@ -220,9 +214,7 @@ func TestTextFormatterMessageStrings(test *testing.T) {
 			if string(data) != want {
 				test.Fatalf("output = %q, want %q", data, want)
 			}
-			if !bytes.Equal(record.JSON(), encoded) {
-				test.Fatal("message formatting changed the encoded record")
-			}
+			assertRecordMatchesJSONFixture(test, record, encoded)
 		})
 	}
 }
@@ -239,7 +231,7 @@ func TestTextFormatterMessageOnlyHasNoColors(test *testing.T) {
 	} {
 		test.Run(testCase.data, func(test *testing.T) {
 			formatter := TextFormatter{DisableTimestamp: true}
-			data, err := formatter.format(core.NewRecord(slog.LevelInfo, []byte(testCase.data)), 0)
+			data, err := formatter.format(recordFromJSONFixture(slog.LevelInfo, []byte(testCase.data)), 0)
 			if err != nil {
 				test.Fatal(err)
 			}
@@ -263,8 +255,8 @@ func TestTextFormatterLevelColors(test *testing.T) {
 	} {
 		test.Run(testCase.level.String(), func(test *testing.T) {
 			var destination bytes.Buffer
-			record := core.NewRecord(testCase.level, []byte(fmt.Sprintf(`{"level":%q,"msg":"event","size":10,"ok":true,"data":{"id":7}}`, testCase.level.String())))
-			if err := New(&destination, &TextFormatter{ForceColors: true, DisableTimestamp: true, ShowLevel: true}).WriteRecord(record); err != nil {
+			record := recordFromJSONFixture(testCase.level, []byte(fmt.Sprintf(`{"level":%q,"msg":"event","size":10,"ok":true,"data":{"id":7}}`, testCase.level.String())))
+			if err := New(&destination, &TextFormatter{ForceColors: true, DisableTimestamp: true, ShowLevel: true}).WriteRecord(record, nil); err != nil {
 				test.Fatal(err)
 			}
 			want := testCase.color + testCase.label + "\x1b[0m event " + testCase.color + "size\x1b[0m=10 " +
@@ -289,7 +281,7 @@ func TestTextFormatterLevelPrefixes(test *testing.T) {
 		test.Run(testCase.level.String(), func(test *testing.T) {
 			label := testCase.level.String()
 			encoded := fmt.Sprintf(`{"level":%q,"msg":%q,"state":%q,"data":{"level":%q}}`, label, label+" occurred", label, label)
-			record := core.NewRecord(testCase.level, []byte(encoded))
+			record := recordFromJSONFixture(testCase.level, []byte(encoded))
 			formatter := TextFormatter{DisableColors: true, ShowLevel: true}
 			data, err := formatter.format(record, 12*time.Second)
 			if err != nil {
@@ -299,15 +291,13 @@ func TestTextFormatterLevelPrefixes(test *testing.T) {
 			if string(data) != want {
 				test.Fatalf("output = %q, want %q", data, want)
 			}
-			if string(record.JSON()) != encoded {
-				test.Fatal("abbreviating the prefix changed the encoded record")
-			}
+			assertRecordMatchesJSONFixture(test, record, encoded)
 		})
 	}
 }
 
 func TestTextOutputColorOptions(test *testing.T) {
-	record := core.NewRecord(slog.LevelInfo, []byte(`{"msg":"event","size":10}`))
+	record := recordFromJSONFixture(slog.LevelInfo, []byte(`{"msg":"event","size":10}`))
 	for _, testCase := range []struct {
 		name      string
 		formatter TextFormatter
@@ -328,7 +318,7 @@ func TestTextOutputColorOptions(test *testing.T) {
 			formatter := testCase.formatter
 			formatter.DisableTimestamp = true
 			var destination bytes.Buffer
-			if err := New(&destination, &formatter).WriteRecord(record); err != nil {
+			if err := New(&destination, &formatter).WriteRecord(record, nil); err != nil {
 				test.Fatal(err)
 			}
 			want := "event size=10\n"
@@ -343,8 +333,8 @@ func TestTextOutputColorOptions(test *testing.T) {
 }
 
 func TestTextFormatterColorsPreservePlainText(test *testing.T) {
-	data := []byte(`{"time":"2026-09-16T10:11:12Z","level":"WARN","msg":"line\n\u001b[31m","key with space":"a=b","service":"api","service":"worker","data":{"user":{"id":7}},"items":[1,null,"two"]}`)
-	record := core.NewRecord(slog.LevelWarn, data)
+	data := `{"time":"2026-09-16T10:11:12Z","level":"WARN","msg":"line\n\u001b[31m","key with space":"a=b","service":"api","service":"worker","data":{"user":{"id":7}},"items":[1,null,"two"]}`
+	record := recordFromJSONFixture(slog.LevelWarn, []byte(data))
 	for _, testCase := range []struct {
 		name      string
 		formatter TextFormatter
@@ -372,15 +362,13 @@ func TestTextFormatterColorsPreservePlainText(test *testing.T) {
 			if bytes.Contains(plain, []byte{'\x1b'}) || bytes.Count(colored, []byte{'\n'}) != 1 {
 				test.Fatalf("unexpected escape or newline: colored=%q plain=%q", colored, plain)
 			}
-			if !bytes.Equal(record.JSON(), data) {
-				test.Fatal("color formatting changed the encoded record")
-			}
+			assertRecordMatchesJSONFixture(test, record, data)
 		})
 	}
 }
 
 func TestTextFormatterTimestampOnlyHasNoColors(test *testing.T) {
-	record := core.NewRecord(slog.LevelInfo, []byte(`{"time":"2026-09-16T10:11:12Z"}`))
+	record := recordFromJSONFixture(slog.LevelInfo, []byte(`{"time":"2026-09-16T10:11:12Z"}`))
 	data, err := (TextFormatter{}).format(record, 12*time.Second)
 	if err != nil {
 		test.Fatal(err)
@@ -440,7 +428,7 @@ func TestTextFormatterHandlesMissingOrCustomMetadata(test *testing.T) {
 		test.Run(testCase.name, func(test *testing.T) {
 			var destination bytes.Buffer
 			formatter := TextFormatter{DisableColors: true, TimestampFormat: "15:04:05", ShowLevel: true}
-			if err := New(&destination, &formatter).WriteRecord(core.NewRecord(slog.LevelInfo, []byte(testCase.data))); err != nil {
+			if err := New(&destination, &formatter).WriteRecord(recordFromJSONFixture(slog.LevelInfo, []byte(testCase.data)), nil); err != nil {
 				test.Fatal(err)
 			}
 			if destination.String() != testCase.want {
@@ -450,14 +438,40 @@ func TestTextFormatterHandlesMissingOrCustomMetadata(test *testing.T) {
 	}
 }
 
-func TestTextFormatterRejectsMalformedJSON(test *testing.T) {
-	for _, data := range []string{"", "[]", `{"msg":`, `{"msg":"ok"} {}`} {
+func TestTextOutputDoesNotReadJSON(test *testing.T) {
+	record := slog.NewRecord(time.Time{}, slog.LevelInfo, "original", 0)
+	record.AddAttrs(slog.String("msg", "event"), slog.Int("answer", 42))
+	for _, data := range []string{"", "[]", `{"msg":`, `{"msg":"different"}`} {
 		test.Run(data, func(test *testing.T) {
 			var destination bytes.Buffer
-			err := New(&destination, &TextFormatter{}).WriteRecord(core.NewRecord(slog.LevelInfo, []byte(data)))
-			if err == nil || destination.Len() != 0 {
-				test.Fatalf("error=%v output=%q, want error without partial output", err, destination.String())
+			formatter := TextFormatter{DisableColors: true, DisableTimestamp: true}
+			if err := New(&destination, &formatter).WriteRecord(record, []byte(data)); err != nil {
+				test.Fatal(err)
+			}
+			if want := "event answer=42\n"; destination.String() != want {
+				test.Fatalf("output = %q, want %q", destination.String(), want)
 			}
 		})
+	}
+}
+
+func TestTextFormatterTypedAttributes(test *testing.T) {
+	timestamp := time.Date(2026, time.September, 17, 10, 11, 12, 0, time.UTC)
+	record := slog.NewRecord(timestamp, slog.LevelInfo, "event", 0)
+	record.AddAttrs(
+		slog.Time("time", timestamp), slog.String("level", "INFO"), slog.String("msg", "event"),
+		slog.Int64("id", 9007199254740993), slog.Float64("ratio", 0.75),
+		slog.Duration("duration", 1500*time.Microsecond), slog.Time("at", timestamp),
+		slog.Group("data", slog.String("path", "<value>"), slog.Group("nested", slog.Bool("ok", true))),
+		slog.Any("raw", json.RawMessage(`[1,null,"two"]`)),
+	)
+	formatter := TextFormatter{DisableColors: true, ShowLevel: true, TimestampFormat: "15:04:05"}
+	data, err := formatter.format(record, 0)
+	if err != nil {
+		test.Fatal(err)
+	}
+	want := "INFO[10:11:12] event id=9007199254740993 ratio=0.75 duration=1500000 at=2026-09-17T10:11:12Z data={\"path\":\"<value>\",\"nested\":{\"ok\":true}} raw=[1,null,\"two\"]\n"
+	if string(data) != want {
+		test.Fatalf("output = %q, want %q", data, want)
 	}
 }

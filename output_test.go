@@ -68,17 +68,19 @@ func TestRuntimeCopiesOutputSliceAndPreservesOrder(test *testing.T) {
 	if !slices.Equal(events, want) {
 		test.Fatalf("output calls = %v, want %v", events, want)
 	}
-	records, err := runtime.Consumer().Take(0)
-	if err != nil || len(records) != 1 {
-		test.Fatalf("retained records=%d error=%v, want one record", len(records), err)
+	if count := runtime.Consumer().Len(); count != 1 {
+		test.Fatalf("retained records=%d, want one record", count)
 	}
 	for _, output := range []*recordingOutput{first, second, third} {
 		if len(output.records) != 1 {
 			test.Fatalf("%s received %d records, want one", output.name, len(output.records))
 		}
-		if output.records[0].Level() != slog.LevelInfo || !bytes.Equal(output.records[0].JSON(), records[0].JSON()) {
+		if output.records[0].Level != slog.LevelInfo || !bytes.Equal(output.jsonContents[0], first.jsonContents[0]) {
 			test.Fatalf("%s received different encoded data", output.name)
 		}
+	}
+	if size := runtime.Consumer().Bytes(); size != int64(len(first.jsonContents[0])) {
+		test.Fatalf("retained bytes=%d, want JSON content size", size)
 	}
 }
 
@@ -177,17 +179,19 @@ func TestRuntimeClosedState(test *testing.T) {
 }
 
 type recordingOutput struct {
-	name     string
-	events   *[]string
-	records  []easylog.Record
-	writeErr error
-	syncErr  error
-	closeErr error
+	name         string
+	events       *[]string
+	records      []slog.Record
+	jsonContents [][]byte
+	writeErr     error
+	syncErr      error
+	closeErr     error
 }
 
-func (output *recordingOutput) WriteRecord(record easylog.Record) error {
+func (output *recordingOutput) WriteRecord(record slog.Record, jsonContent []byte) error {
 	*output.events = append(*output.events, output.name+".write")
 	output.records = append(output.records, record)
+	output.jsonContents = append(output.jsonContents, jsonContent)
 	return output.writeErr
 }
 

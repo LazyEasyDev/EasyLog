@@ -1,0 +1,42 @@
+goos: darwin
+goarch: arm64
+pkg: github.com/LazyEasyDev/EasyLog/benchmarks
+cpu: Apple M4
+BenchmarkFormats/workload=Message/format=JSON         	 1080332	       549.9 ns/op	      96 B/op	       1 allocs/op
+BenchmarkFormats/workload=Message/format=JSON         	 1000000	       546.2 ns/op	      96 B/op	       1 allocs/op
+BenchmarkFormats/workload=Message/format=JSON         	 1000000	       548.7 ns/op	      96 B/op	       1 allocs/op
+BenchmarkFormats/workload=Message/format=JSON         	 1000000	       549.6 ns/op	      96 B/op	       1 allocs/op
+BenchmarkFormats/workload=Message/format=JSON         	 1000000	       575.6 ns/op	      96 B/op	       1 allocs/op
+BenchmarkFormats/workload=Message/format=JSON         	 1000000	       546.7 ns/op	      96 B/op	       1 allocs/op
+BenchmarkFormats/workload=Message/format=Text         	  742006	       831.0 ns/op	     496 B/op	       8 allocs/op
+BenchmarkFormats/workload=Message/format=Text         	  736320	       835.4 ns/op	     496 B/op	       8 allocs/op
+BenchmarkFormats/workload=Message/format=Text         	  736779	       832.6 ns/op	     496 B/op	       8 allocs/op
+BenchmarkFormats/workload=Message/format=Text         	  735579	       831.8 ns/op	     496 B/op	       8 allocs/op
+BenchmarkFormats/workload=Message/format=Text         	  718602	       887.0 ns/op	     496 B/op	       8 allocs/op
+BenchmarkFormats/workload=Message/format=Text         	  725532	       835.3 ns/op	     496 B/op	       8 allocs/op
+BenchmarkFormats/workload=Fields10/format=JSON        	  294429	      1992 ns/op	    1736 B/op	       8 allocs/op
+BenchmarkFormats/workload=Fields10/format=JSON        	  303674	      1988 ns/op	    1736 B/op	       8 allocs/op
+BenchmarkFormats/workload=Fields10/format=JSON        	  303021	      1994 ns/op	    1736 B/op	       8 allocs/op
+BenchmarkFormats/workload=Fields10/format=JSON        	  301855	      1993 ns/op	    1736 B/op	       8 allocs/op
+BenchmarkFormats/workload=Fields10/format=JSON        	  302829	      1998 ns/op	    1736 B/op	       8 allocs/op
+BenchmarkFormats/workload=Fields10/format=JSON        	  305679	      1995 ns/op	    1736 B/op	       8 allocs/op
+BenchmarkFormats/workload=Fields10/format=Text        	  196978	      3079 ns/op	    2640 B/op	      18 allocs/op
+BenchmarkFormats/workload=Fields10/format=Text        	  193531	      3059 ns/op	    2640 B/op	      18 allocs/op
+BenchmarkFormats/workload=Fields10/format=Text        	  196294	      3089 ns/op	    2640 B/op	      18 allocs/op
+BenchmarkFormats/workload=Fields10/format=Text        	  194067	      3078 ns/op	    2640 B/op	      18 allocs/op
+BenchmarkFormats/workload=Fields10/format=Text        	  194317	      3093 ns/op	    2640 B/op	      18 allocs/op
+BenchmarkFormats/workload=Fields10/format=Text        	  193173	      3094 ns/op	    2640 B/op	      18 allocs/op
+BenchmarkFormats/workload=Context10/format=JSON       	  324907	      1835 ns/op	    1528 B/op	       7 allocs/op
+BenchmarkFormats/workload=Context10/format=JSON       	  329818	      1832 ns/op	    1528 B/op	       7 allocs/op
+BenchmarkFormats/workload=Context10/format=JSON       	  325518	      1834 ns/op	    1528 B/op	       7 allocs/op
+BenchmarkFormats/workload=Context10/format=JSON       	  328696	      1831 ns/op	    1528 B/op	       7 allocs/op
+BenchmarkFormats/workload=Context10/format=JSON       	  326288	      1838 ns/op	    1528 B/op	       7 allocs/op
+BenchmarkFormats/workload=Context10/format=JSON       	  325665	      1840 ns/op	    1528 B/op	       7 allocs/op
+BenchmarkFormats/workload=Context10/format=Text       	  204922	      2893 ns/op	    2432 B/op	      17 allocs/op
+BenchmarkFormats/workload=Context10/format=Text       	  204315	      2916 ns/op	    2432 B/op	      17 allocs/op
+BenchmarkFormats/workload=Context10/format=Text       	  201040	      2908 ns/op	    2432 B/op	      17 allocs/op
+BenchmarkFormats/workload=Context10/format=Text       	  202983	      2908 ns/op	    2432 B/op	      17 allocs/op
+BenchmarkFormats/workload=Context10/format=Text       	  205465	      2900 ns/op	    2432 B/op	      17 allocs/op
+BenchmarkFormats/workload=Context10/format=Text       	  203496	      2869 ns/op	    2432 B/op	      17 allocs/op
+PASS
+ok  	github.com/LazyEasyDev/EasyLog/benchmarks	21.634s

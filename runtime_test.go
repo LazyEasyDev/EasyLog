@@ -53,12 +53,16 @@ func TestNewLevelDefaults(test *testing.T) {
 
 			logger.Log(ctx, testCase.wantLevel-1, "filtered")
 			logger.Log(ctx, testCase.wantLevel, "retained")
-			records, err := runtime.Consumer().Take(0)
-			if err != nil || len(records) != 1 {
-				test.Fatalf("records=%d err=%v, want 1 record and no error", len(records), err)
+			records := retainedMemoryJSON(test, runtime.Consumer())
+			if len(records) != 1 {
+				test.Fatalf("records=%d, want one record", len(records))
 			}
-			if records[0].Level() != testCase.wantLevel {
-				test.Fatalf("record level = %v, want %v", records[0].Level(), testCase.wantLevel)
+			var decoded struct{ Level string }
+			if err := json.Unmarshal(records[0], &decoded); err != nil {
+				test.Fatal(err)
+			}
+			if decoded.Level != testCase.wantLevel.String() {
+				test.Fatalf("record level = %s, want %v", decoded.Level, testCase.wantLevel)
 			}
 		})
 	}
@@ -85,33 +89,27 @@ func TestNewMemoryMaxBytes(t *testing.T) {
 	}
 }
 
-func TestRuntimeFanoutAndConsumeShareEncodedRecord(t *testing.T) {
+func TestRuntimeFanoutAndMemoryShareEncodedJSON(t *testing.T) {
 	var output bytes.Buffer
 	runtime := New(Options{
 		MemoryMaxBytes: 1024,
 	}, []Output{terminaloutput.NewJSON(&output)})
 	runtime.Logger().Info("hello", "answer", 42)
-	records, err := runtime.Consumer().Take(0)
-	if err != nil {
-		t.Fatal(err)
-	}
+	records := retainedMemoryJSON(t, runtime.Consumer())
 	if len(records) != 1 {
-		t.Fatalf("got %d consumed records, want 1", len(records))
+		t.Fatalf("got %d retained records, want 1", len(records))
 	}
 
 	outputRecord := bytes.TrimSuffix(output.Bytes(), []byte{'\n'})
-	if !bytes.Equal(records[0].JSON(), outputRecord) {
-		t.Fatal("consumer and output received different encodings")
-	}
-	if records[0].Level() != slog.LevelInfo {
-		t.Fatalf("got level %v, want INFO", records[0].Level())
+	if !bytes.Equal(records[0], outputRecord) {
+		t.Fatal("memory and output received different encodings")
 	}
 
 	var decoded map[string]any
-	if err := json.Unmarshal(records[0].JSON(), &decoded); err != nil {
+	if err := json.Unmarshal(records[0], &decoded); err != nil {
 		t.Fatal(err)
 	}
-	if decoded["msg"] != "hello" || decoded["answer"] != float64(42) {
+	if decoded["level"] != "INFO" || decoded["msg"] != "hello" || decoded["answer"] != float64(42) {
 		t.Fatalf("unexpected encoded record: %v", decoded)
 	}
 }
@@ -124,11 +122,11 @@ func TestHandlerPreservesWithAttrsAndGroups(t *testing.T) {
 		With("id", 7).
 		Info("completed", "status", 200)
 
-	records, err := runtime.Consumer().Take(0)
-	if err != nil || len(records) != 1 {
-		t.Fatalf("records=%d err=%v", len(records), err)
+	records := retainedMemoryJSON(t, runtime.Consumer())
+	if len(records) != 1 {
+		t.Fatalf("records=%d, want one record", len(records))
 	}
-	data := records[0].JSON()
+	data := records[0]
 	var decoded map[string]any
 	if err := json.Unmarshal(data, &decoded); err != nil {
 		t.Fatal(err)
@@ -168,12 +166,12 @@ func TestHandlerIgnoresReservedAttributes(test *testing.T) {
 	if err := runtime.Handler().Handle(context.Background(), source); err != nil {
 		test.Fatal(err)
 	}
-	records, err := runtime.Consumer().Take(0)
-	if err != nil || len(records) != 1 {
-		test.Fatalf("records=%d err=%v, want one record", len(records), err)
+	records := retainedMemoryJSON(test, runtime.Consumer())
+	if len(records) != 1 {
+		test.Fatalf("records=%d, want one record", len(records))
 	}
 	want := `{"time":"2026-09-17T10:11:12Z","level":"INFO","msg":"event","request_id":"req-123","request_id":"req-456"}`
-	if got := string(records[0].JSON()); got != want {
+	if got := string(records[0]); got != want {
 		test.Errorf("memory record = %s, want %s", got, want)
 	}
 	if got := output.String(); got != want+"\n" {
@@ -235,31 +233,58 @@ func TestEveryOutputAttemptedAndMemoryRetainedAfterFailure(t *testing.T) {
 	}
 }
 
-func TestRecordAvailableWhileOutputBlocked(t *testing.T) {
-	output := newBlockingWriter()
+func TestTakeWhileOutputBlockedPreservesSharedJSON(test *testing.T) {
+	entered := make(chan struct{})
+	release := make(chan struct{})
+	unblock := sync.OnceFunc(func() { close(release) })
+	var received []byte
+	output := &lifecycleTestOutput{writeRecord: func(_ slog.Record, jsonContent []byte) error {
+		close(entered)
+		<-release
+		received = bytes.Clone(jsonContent)
+		return nil
+	}}
+	var destination bytes.Buffer
 	runtime := New(Options{
 		MemoryMaxBytes: 1024,
-	}, []Output{terminaloutput.NewJSON(output)})
+	}, []Output{output, terminaloutput.NewJSON(&destination)})
+	test.Cleanup(func() { _ = runtime.Close() })
 
 	logged := make(chan struct{})
+	var handleErr error
 	go func() {
-		runtime.Logger().Info("blocked")
+		handleErr = runtime.Handler().Handle(context.Background(), slog.NewRecord(time.Time{}, slog.LevelInfo, "blocked", 0))
 		close(logged)
 	}()
-	<-output.entered
+	test.Cleanup(func() {
+		unblock()
+		<-logged
+	})
+	<-entered
 
-	records, err := runtime.Consumer().Take(0)
-	if err != nil || len(records) != 1 {
-		t.Fatalf("take while blocked: records=%d err=%v", len(records), err)
+	const want = `{"level":"INFO","msg":"blocked"}`
+	records, err := runtime.Consumer().Take(1)
+	if err != nil || len(records) != 1 || string(records[0]) != want {
+		test.Fatalf("take while blocked: records=%q err=%v", records, err)
+	}
+	records[0][0] = '!'
+	if runtime.Consumer().Len() != 0 || runtime.Consumer().Bytes() != 0 {
+		test.Fatal("Take did not drain the retained record while output was blocked")
 	}
 	select {
 	case <-logged:
-		t.Fatal("logging returned before output was released")
+		test.Fatal("logging returned before output was released")
 	default:
 	}
 
-	close(output.release)
+	unblock()
 	<-logged
+	if handleErr != nil {
+		test.Fatal(handleErr)
+	}
+	if string(received) != want || destination.String() != want+"\n" {
+		test.Fatalf("Take mutation changed output: custom=%q terminal=%q", received, destination.String())
+	}
 }
 
 func TestDynamicLevelAndContextEnricher(t *testing.T) {
@@ -284,11 +309,8 @@ func TestDynamicLevelAndContextEnricher(t *testing.T) {
 		t.Fatalf("memory records = %d, want 1", runtime.Consumer().Len())
 	}
 
-	records, err := runtime.Consumer().Take(0)
-	if err != nil {
-		t.Fatal(err)
-	}
-	data := records[0].JSON()
+	records := retainedMemoryJSON(t, runtime.Consumer())
+	data := records[0]
 	var decoded map[string]any
 	if err := json.Unmarshal(data, &decoded); err != nil {
 		t.Fatal(err)
@@ -299,8 +321,8 @@ func TestDynamicLevelAndContextEnricher(t *testing.T) {
 
 	level.Set(slog.LevelDebug)
 	runtime.Logger().DebugContext(ctx, "enabled after level update")
-	if runtime.Consumer().Len() != 1 {
-		t.Fatalf("memory records after level update = %d, want 1", runtime.Consumer().Len())
+	if runtime.Consumer().Len() != 2 {
+		t.Fatalf("memory records after level update = %d, want 2", runtime.Consumer().Len())
 	}
 }
 
@@ -317,11 +339,8 @@ func TestEncodingSupportsSourceReplaceAttrAndLogValuer(t *testing.T) {
 	}, nil)
 	runtime.Logger().Info("original", "lazy", staticLogValuer("resolved"), "source", "user source")
 
-	records, err := runtime.Consumer().Take(0)
-	if err != nil {
-		t.Fatal(err)
-	}
-	data := records[0].JSON()
+	records := retainedMemoryJSON(t, runtime.Consumer())
+	data := records[0]
 	var decoded map[string]any
 	if err := json.Unmarshal(data, &decoded); err != nil {
 		t.Fatal(err)
@@ -342,9 +361,9 @@ func TestMemoryOverflowDoesNotAffectOutput(t *testing.T) {
 	runtime.Logger().Info("first")
 	runtime.Logger().Info("second")
 
-	records, err := runtime.Consumer().Take(0)
-	if err != nil || len(records) != 1 || !bytes.Contains(records[0].JSON(), []byte(`"msg":"second"`)) {
-		t.Fatalf("unexpected retained records: records=%d err=%v", len(records), err)
+	records := retainedMemoryJSON(t, runtime.Consumer())
+	if len(records) != 1 || !bytes.Contains(records[0], []byte(`"msg":"second"`)) {
+		t.Fatalf("unexpected retained records: records=%d", len(records))
 	}
 	if count := bytes.Count(output.Bytes(), []byte{'\n'}); count != 2 {
 		t.Fatalf("output records = %d, want 2", count)
@@ -394,13 +413,15 @@ func TestConcurrentHandleAndTake(t *testing.T) {
 	runtime := New(Options{
 		MemoryMaxBytes: 1 << 20,
 	}, []Output{terminaloutput.NewJSON(io.Discard)})
+	t.Cleanup(func() { _ = runtime.Close() })
 	logger := runtime.Logger()
 	start := make(chan struct{})
 	errorsSeen := make(chan error, 16)
 	recordAvailable := make(chan struct{}, 1)
 	producersFinished := make(chan struct{})
+	var consumed [][]byte
 
-	const producers = 8
+	const producers, recordsPerProducer = 8, 100
 	var ready sync.WaitGroup
 	var producersDone sync.WaitGroup
 	var consumer sync.WaitGroup
@@ -412,7 +433,7 @@ func TestConcurrentHandleAndTake(t *testing.T) {
 			defer producersDone.Done()
 			ready.Done()
 			<-start
-			for record := range 100 {
+			for record := range recordsPerProducer {
 				logger.Info("concurrent", "producer", producer, "record", record)
 				select {
 				case recordAvailable <- struct{}{}:
@@ -432,6 +453,7 @@ func TestConcurrentHandleAndTake(t *testing.T) {
 				return
 			}
 			if len(records) > 0 {
+				consumed = append(consumed, records...)
 				continue
 			}
 			select {
@@ -450,6 +472,30 @@ func TestConcurrentHandleAndTake(t *testing.T) {
 	close(errorsSeen)
 	for err := range errorsSeen {
 		t.Errorf("concurrent operation: %v", err)
+	}
+	remaining, err := runtime.Consumer().Take(0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	consumed = append(consumed, remaining...)
+	if len(consumed) != producers*recordsPerProducer || runtime.Consumer().Len() != 0 || runtime.Consumer().Bytes() != 0 {
+		t.Fatalf("consumed=%d retained=%d bytes=%d, want %d consumed and an empty store", len(consumed), runtime.Consumer().Len(), runtime.Consumer().Bytes(), producers*recordsPerProducer)
+	}
+	seen := make(map[[2]int]bool, len(consumed))
+	for _, content := range consumed {
+		var record struct {
+			Message  string `json:"msg"`
+			Producer int
+			Record   int
+		}
+		if err := json.Unmarshal(content, &record); err != nil {
+			t.Fatal(err)
+		}
+		key := [2]int{record.Producer, record.Record}
+		if record.Message != "concurrent" || record.Producer < 0 || record.Producer >= producers || record.Record < 0 || record.Record >= recordsPerProducer || seen[key] {
+			t.Fatalf("unexpected or duplicate consumed JSON: %s", content)
+		}
+		seen[key] = true
 	}
 }
 

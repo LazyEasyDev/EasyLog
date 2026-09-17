@@ -3,19 +3,22 @@ package terminal
 
 import (
 	"io"
+	"log/slog"
 	"os"
+	"slices"
 	"sync"
 	"time"
-
-	"github.com/LazyEasyDev/EasyLog/internal/core"
 )
+
+const maxLineBufferBytes = 64 * 1024
 
 // Output writes complete records to a caller-owned writer.
 type Output struct {
-	mu        sync.Mutex
-	writer    io.Writer
-	formatter *TextFormatter
-	startedAt time.Time
+	mu         sync.Mutex
+	writer     io.Writer
+	formatter  *TextFormatter
+	startedAt  time.Time
+	lineBuffer []byte
 }
 
 func GetDefaultTextFormatter() TextFormatter {
@@ -73,11 +76,9 @@ func autoColors(writer io.Writer) bool {
 }
 
 // WriteRecord writes one JSON or text record followed by exactly one newline.
-func (o *Output) WriteRecord(record core.Record) error {
+func (o *Output) WriteRecord(record slog.Record, jsonContent []byte) error {
 	var data []byte
-	if o.formatter == nil {
-		data = append(record.JSON(), '\n')
-	} else {
+	if o.formatter != nil {
 		var err error
 		data, err = o.formatter.format(record, time.Since(o.startedAt))
 		if err != nil {
@@ -86,10 +87,20 @@ func (o *Output) WriteRecord(record core.Record) error {
 	}
 	o.mu.Lock()
 	defer o.mu.Unlock()
-	return writeAll(o.writer, data)
+	if o.formatter != nil {
+		return writeAll(o.writer, data)
+	}
+	o.lineBuffer = slices.Grow(o.lineBuffer[:0], len(jsonContent)+1)
+	o.lineBuffer = append(o.lineBuffer, jsonContent...)
+	o.lineBuffer = append(o.lineBuffer, '\n')
+	err := writeAll(o.writer, o.lineBuffer)
+	if cap(o.lineBuffer) > maxLineBufferBytes {
+		o.lineBuffer = nil
+	}
+	return err
 }
 
-// Sync is a no-op because Output does not buffer writes.
+// Sync is a no-op because Output has no pending buffered writes.
 // Any buffering in the caller-owned writer must be flushed by the caller.
 func (o *Output) Sync() error {
 	return nil

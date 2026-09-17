@@ -58,17 +58,19 @@ func TestInitWithOutputsInstallsDefaultAndLifecycle(test *testing.T) {
 	if !slices.Equal(events, want) {
 		test.Fatalf("output calls = %v, want %v", events, want)
 	}
-	records, err := consumer.Take(0)
-	if err != nil || len(records) != 1 {
-		test.Fatalf("memory records=%d error=%v, want one record", len(records), err)
+	if count := consumer.Len(); count != 1 {
+		test.Fatalf("memory records=%d, want one record", count)
 	}
 	for _, output := range []*recordingOutput{first, second} {
 		if len(output.records) != 1 {
 			test.Fatalf("%s received %d records, want one", output.name, len(output.records))
 		}
-		if output.records[0].Level() != slog.LevelDebug || !bytes.Equal(output.records[0].JSON(), records[0].JSON()) {
+		if output.records[0].Level != slog.LevelDebug || !bytes.Equal(output.jsonContents[0], first.jsonContents[0]) {
 			test.Fatalf("%s received different encoded data or ignored the configured level", output.name)
 		}
+	}
+	if size := consumer.Bytes(); size != int64(len(first.jsonContents[0])) {
+		test.Fatalf("memory bytes=%d, want JSON content size", size)
 	}
 }
 

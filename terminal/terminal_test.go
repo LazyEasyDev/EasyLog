@@ -3,7 +3,10 @@ package terminal_test
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"io"
+	"log/slog"
 	"strings"
 	"sync"
 	"testing"
@@ -51,6 +54,59 @@ func TestOutputHandlesShortWrites(t *testing.T) {
 	if decoded["msg"] != "short writes" {
 		t.Fatalf("unexpected record: %v", decoded)
 	}
+}
+
+func TestJSONOutputPreservesWriteBehavior(test *testing.T) {
+	writeFailure := errors.New("write failed")
+	content := `{"msg":"event"}`
+	line := content + "\n"
+	for _, testCase := range []struct {
+		name      string
+		data      []byte
+		limit     int
+		writeErr  error
+		want      string
+		wantErr   error
+		wantCalls int
+	}{
+		{name: "full", data: []byte(content), limit: len(line), want: line, wantCalls: 1},
+		{name: "spare_capacity", data: []byte(content + "!")[:len(content)], limit: len(line), want: line, wantCalls: 1},
+		{name: "short", data: []byte(content), limit: 3, want: line, wantCalls: (len(line) + 2) / 3},
+		{name: "empty", data: []byte{}, limit: 1, want: "\n", wantCalls: 1},
+		{name: "nil", limit: 1, want: "\n", wantCalls: 1},
+		{name: "zero_progress", data: []byte(content), wantErr: io.ErrShortWrite, wantCalls: 1},
+		{name: "partial_error", data: []byte(content), limit: 4, writeErr: writeFailure, want: line[:4], wantErr: writeFailure, wantCalls: 1},
+		{name: "newline_error", data: []byte(content), limit: len(content), writeErr: writeFailure, want: content, wantErr: writeFailure, wantCalls: 1},
+		{name: "zero_error", data: []byte(content), writeErr: writeFailure, wantErr: writeFailure, wantCalls: 1},
+		{name: "full_error", data: []byte(content), limit: len(line), writeErr: writeFailure, want: line, wantErr: writeFailure, wantCalls: 1},
+	} {
+		test.Run(testCase.name, func(test *testing.T) {
+			original := bytes.Clone(testCase.data[:cap(testCase.data)])
+			var destination bytes.Buffer
+			var calls int
+			writer := jsonWriterFunc(func(data []byte) (int, error) {
+				calls++
+				written, err := destination.Write(data[:min(len(data), testCase.limit)])
+				if err != nil {
+					return written, err
+				}
+				return written, testCase.writeErr
+			})
+			err := terminal.NewJSON(writer).WriteRecord(slog.Record{}, testCase.data)
+			if !errors.Is(err, testCase.wantErr) || destination.String() != testCase.want || calls != testCase.wantCalls {
+				test.Fatalf("output=%q calls=%d err=%v, want %q, %d calls, and %v", destination.String(), calls, err, testCase.want, testCase.wantCalls, testCase.wantErr)
+			}
+			if !bytes.Equal(testCase.data[:cap(testCase.data)], original) {
+				test.Fatal("writing changed the input bytes")
+			}
+		})
+	}
+}
+
+type jsonWriterFunc func([]byte) (int, error)
+
+func (write jsonWriterFunc) Write(data []byte) (int, error) {
+	return write(data)
 }
 
 type shortWriter struct {

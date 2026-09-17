@@ -1,26 +1,27 @@
 package easylog
 
 import (
+	"bytes"
 	"errors"
 	"sync"
 )
 
-var (
-	// ErrInvalidPageSize indicates a negative Take page size.
-	ErrInvalidPageSize = errors.New("easylog: invalid page size")
-)
+// ErrInvalidPageSize indicates a negative Take page size.
+var ErrInvalidPageSize = errors.New("easylog: invalid page size")
 
-// MemoryConsumer destructively reads records retained in the memory FIFO.
+// MemoryConsumer reads retained JSON records in FIFO order and reports queue state.
 type MemoryConsumer interface {
-	// Take immediately removes up to pageSize oldest records. Zero returns all available records.
-	Take(pageSize int) ([]Record, error)
+	// Take immediately removes up to pageSize oldest records. Zero drains the queue.
+	// Negative sizes return ErrInvalidPageSize; an empty queue returns nil, nil.
+	// Each returned slice is a caller-owned JSON object without a trailing newline.
+	Take(pageSize int) ([][]byte, error)
 	Len() int
 	Bytes() int64
 }
 
 type memoryStore struct {
 	mu       sync.Mutex
-	records  []Record
+	records  [][]byte
 	bytes    int64
 	maxBytes int64
 }
@@ -29,28 +30,27 @@ func newMemoryStore(maxBytes int64) *memoryStore {
 	return &memoryStore{maxBytes: maxBytes}
 }
 
-func (s *memoryStore) append(record Record) {
+func (s *memoryStore) append(jsonContent []byte) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	size := record.Size()
+	size := int64(len(jsonContent))
 	if size > s.maxBytes {
 		return
 	}
 
 	for len(s.records) > 0 && s.bytes+size > s.maxBytes {
-		oldest := s.records[0]
-		oldestSize := oldest.Size()
-		s.records[0] = Record{}
+		oldestSize := int64(len(s.records[0]))
+		s.records[0] = nil
 		s.records = s.records[1:]
 		s.bytes -= oldestSize
 	}
 
-	s.records = append(s.records, record)
+	s.records = append(s.records, jsonContent)
 	s.bytes += size
 }
 
-func (s *memoryStore) Take(pageSize int) ([]Record, error) {
+func (s *memoryStore) Take(pageSize int) ([][]byte, error) {
 	if pageSize < 0 {
 		return nil, ErrInvalidPageSize
 	}
@@ -60,29 +60,26 @@ func (s *memoryStore) Take(pageSize int) ([]Record, error) {
 	if len(s.records) == 0 {
 		return nil, nil
 	}
-	return s.takeLocked(pageSize), nil
-}
 
-func (s *memoryStore) takeLocked(pageSize int) []Record {
 	takeCount := len(s.records)
 	if pageSize > 0 && pageSize < takeCount {
 		takeCount = pageSize
 	}
 
+	result := make([][]byte, takeCount)
 	var takeBytes int64
-	for _, record := range s.records[:takeCount] {
-		takeBytes += record.Size()
+	for index, jsonContent := range s.records[:takeCount] {
+		result[index] = bytes.Clone(jsonContent)
+		takeBytes += int64(len(jsonContent))
 	}
 
-	result := make([]Record, takeCount)
-	copy(result, s.records[:takeCount])
 	clear(s.records[:takeCount])
 	s.records = s.records[takeCount:]
 	if len(s.records) == 0 {
 		s.records = nil
 	}
 	s.bytes -= takeBytes
-	return result
+	return result, nil
 }
 
 func (s *memoryStore) Len() int {

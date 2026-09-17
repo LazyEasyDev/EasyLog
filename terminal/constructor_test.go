@@ -6,14 +6,43 @@ import (
 	"log/slog"
 	"os"
 	"regexp"
+	"strings"
 	"testing"
 	"time"
-
-	"github.com/LazyEasyDev/EasyLog/internal/core"
 )
 
+func TestJSONOutputReusesFramingBuffer(test *testing.T) {
+	output := NewJSON(io.Discard)
+	jsonContent := []byte(`{"msg":"event"}`)
+	allocations := testing.AllocsPerRun(100, func() {
+		if err := output.WriteRecord(slog.Record{}, jsonContent); err != nil {
+			test.Fatal(err)
+		}
+	})
+	if allocations != 0 {
+		test.Fatalf("allocations per framed write = %v, want zero after warmup", allocations)
+	}
+}
+
+func TestJSONOutputReleasesLargeFramingBuffer(test *testing.T) {
+	output := NewJSON(io.Discard)
+	jsonContent := []byte(`{"msg":"` + strings.Repeat("x", maxLineBufferBytes+1) + `"}`)
+	if err := output.WriteRecord(slog.Record{}, jsonContent); err != nil {
+		test.Fatal(err)
+	}
+	if cap(output.lineBuffer) != 0 {
+		test.Fatalf("retained framing buffer capacity = %d, want zero", cap(output.lineBuffer))
+	}
+	if err := output.WriteRecord(slog.Record{}, []byte(`{"msg":"next"}`)); err != nil {
+		test.Fatal(err)
+	}
+	if string(output.lineBuffer) != "{\"msg\":\"next\"}\n" {
+		test.Fatalf("next framed record = %q", output.lineBuffer)
+	}
+}
+
 func TestNewSelectsTextFormatter(test *testing.T) {
-	record := core.NewRecord(slog.LevelInfo, []byte(`{"time":"2026-09-16T10:11:12Z","level":"INFO","msg":"event"}`))
+	record := recordFromJSONFixture(slog.LevelInfo, []byte(`{"time":"2026-09-16T10:11:12Z","level":"INFO","msg":"event"}`))
 	for _, testCase := range []struct {
 		name      string
 		formatter *TextFormatter
@@ -50,7 +79,7 @@ func TestNewSelectsTextFormatter(test *testing.T) {
 			if output.startedAt.Before(before) || output.startedAt.After(after) {
 				test.Fatal("elapsed timer did not start during construction")
 			}
-			if err := output.WriteRecord(record); err != nil {
+			if err := output.WriteRecord(record, nil); err != nil {
 				test.Fatal(err)
 			}
 			if !regexp.MustCompile(testCase.pattern).Match(destination.Bytes()) {

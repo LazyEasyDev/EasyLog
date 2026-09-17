@@ -10,18 +10,18 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"sort"
 	"strconv"
 	"sync"
 	"time"
-
-	"github.com/LazyEasyDev/EasyLog/internal/core"
 )
 
 const (
 	defaultMaxSegmentBytes int64 = 8 << 20
 	defaultMaxSegments           = 7
 	defaultPermissions           = 0o644
+	maxLineBufferBytes           = 64 * 1024
 	dateLayout                   = "20060102"
 	logsDirectoryName            = "logs"
 	debugPrefix                  = "debug"
@@ -80,10 +80,11 @@ type levelStore struct {
 type Output struct {
 	mu sync.Mutex
 
-	options Options
-	now     func() time.Time
-	stores  [len(levelPrefixes)]levelStore
-	closed  bool
+	options    Options
+	now        func() time.Time
+	stores     [len(levelPrefixes)]levelStore
+	closed     bool
+	lineBuffer []byte
 }
 
 // New creates a file output under a managed logs directory.
@@ -124,22 +125,22 @@ func newWithClock(options Options, now func() time.Time) (*Output, error) {
 // WriteRecord writes one complete record, rotating first when necessary.
 // If segment creation fails, the record is dropped; later calls retry creation.
 // It returns an error only when the record cannot be fully written.
-func (o *Output) WriteRecord(record core.Record) error {
-	data := append(record.JSON(), '\n')
+func (o *Output) WriteRecord(record slog.Record, jsonContent []byte) error {
+	lineBytes := int64(len(jsonContent)) + 1
 	o.mu.Lock()
 	defer o.mu.Unlock()
 	if o.closed {
 		return ErrClosed
 	}
 
-	store := o.storeForLevel(record.Level())
+	store := o.storeForLevel(record.Level)
 	date := o.currentDate()
 	var prepareErr error
 	if store.active == nil {
 		prepareErr = o.openSegment(store, date)
 	}
 	dateChanged := store.active != nil && !store.activeSegment.date.Equal(date)
-	segmentFull := store.active != nil && store.activeBytes > 0 && store.activeBytes+int64(len(data)) > o.options.MaxSegmentBytes
+	segmentFull := store.active != nil && store.activeBytes > 0 && store.activeBytes+lineBytes > o.options.MaxSegmentBytes
 	if dateChanged || segmentFull {
 		rotated, err := o.rotate(store, date)
 		prepareErr = errors.Join(prepareErr, err)
@@ -150,7 +151,13 @@ func (o *Output) WriteRecord(record core.Record) error {
 	if store.active == nil {
 		return prepareErr
 	}
-	written, writeErr := writeAll(store.active, data)
+	o.lineBuffer = slices.Grow(o.lineBuffer[:0], len(jsonContent)+1)
+	o.lineBuffer = append(o.lineBuffer, jsonContent...)
+	o.lineBuffer = append(o.lineBuffer, '\n')
+	written, writeErr := writeLine(store.active, o.lineBuffer)
+	if cap(o.lineBuffer) > maxLineBufferBytes {
+		o.lineBuffer = nil
+	}
 	store.activeBytes += int64(written)
 	if writeErr == nil {
 		return nil
@@ -158,6 +165,27 @@ func (o *Output) WriteRecord(record core.Record) error {
 	closeErr := store.active.Close()
 	store.active = nil
 	return errors.Join(prepareErr, writeErr, closeErr)
+}
+
+func writeLine(writer io.Writer, data []byte) (int, error) {
+	if len(data) == 0 {
+		data = []byte{'\n'}
+	}
+	var total int
+	for len(data) > 0 {
+		written, err := writer.Write(data)
+		if written > 0 {
+			total += written
+			data = data[written:]
+		}
+		if err != nil {
+			return total, err
+		}
+		if written == 0 {
+			return total, io.ErrShortWrite
+		}
+	}
+	return total, nil
 }
 
 // Sync flushes the active segment to stable storage.
@@ -431,22 +459,4 @@ func (o *Output) removeSegment(store *levelStore, candidate segment) error {
 		return fmt.Errorf("remove old segment %q: %w", candidate.name, err)
 	}
 	return nil
-}
-
-func writeAll(writer io.Writer, data []byte) (int, error) {
-	total := 0
-	for len(data) > 0 {
-		written, err := writer.Write(data)
-		total += written
-		if written > 0 {
-			data = data[written:]
-		}
-		if err != nil {
-			return total, err
-		}
-		if written == 0 {
-			return total, io.ErrShortWrite
-		}
-	}
-	return total, nil
 }

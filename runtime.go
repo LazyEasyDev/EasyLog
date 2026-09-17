@@ -35,6 +35,7 @@ type runtimeState struct {
 	addSource   bool
 	replaceAttr func([]string, slog.Attr) slog.Attr
 	enrichers   []Enricher
+	encoders    sync.Pool
 
 	memory   *memoryStore
 	outputs  []Output
@@ -64,6 +65,7 @@ func New(options Options, outputs []Output) *Runtime {
 		enrichers:   append([]Enricher(nil), options.Enrichers...),
 		outputs:     append([]Output(nil), outputs...),
 	}
+	state.encoders.New = func() any { return newRecordEncoder() }
 
 	if options.MemoryMaxBytes > 0 {
 		state.memory = newMemoryStore(options.MemoryMaxBytes)
@@ -136,7 +138,14 @@ func (r *Runtime) Close() error {
 	return errors.Join(failures...)
 }
 
-func (s *runtimeState) write(record Record) error {
+func (s *runtimeState) write(ctx context.Context, record slog.Record) error {
+	jsonContent, err := s.encode(ctx, record)
+	if err != nil {
+		return err
+	}
+	if s.memory != nil {
+		s.memory.append(jsonContent)
+	}
 	s.outputMu.Lock()
 	defer s.outputMu.Unlock()
 	if s.closed.Load() {
@@ -148,7 +157,7 @@ func (s *runtimeState) write(record Record) error {
 		if output == nil {
 			continue
 		}
-		if err := output.WriteRecord(record); err != nil {
+		if err := output.WriteRecord(record, jsonContent); err != nil {
 			failures = append(failures, fmt.Errorf("output %d write: %w", index, err))
 		}
 	}
