@@ -11,9 +11,8 @@ var ErrInvalidPageSize = errors.New("easylog: invalid page size")
 
 // MemoryConsumer reads retained JSON records in FIFO order and reports queue state.
 type MemoryConsumer interface {
-	// Take immediately removes up to pageSize oldest records. Zero drains the queue.
-	// Negative sizes return ErrInvalidPageSize; an empty queue returns nil, nil.
-	// Each returned slice is a caller-owned JSON object without a trailing newline.
+	// Take removes up to pageSize oldest records as caller-owned JSON slices, each ending in one newline.
+	// Zero drains the queue; negative returns ErrInvalidPageSize; empty returns nil, nil.
 	Take(pageSize int) ([][]byte, error)
 	Len() int
 	Bytes() int64

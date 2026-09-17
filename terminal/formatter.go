@@ -3,17 +3,14 @@ package terminal
 import (
 	"bytes"
 	"fmt"
-	"log/slog"
 	"strconv"
 	"time"
 	"unicode"
 )
 
-// TextFormatter renders a level and timestamp prefix, a message, and key=value fields.
-// It reads prepared attributes directly without decoding JSON or modifying the record.
+// TextFormatter renders JSON fields as a level, timestamp, message, and key=value fields.
 type TextFormatter struct {
-	// ForceColors emits ANSI colors even when terminal detection or environment checks disable them.
-	// The destination must already support ANSI escape sequences.
+	// ForceColors emits ANSI colors without terminal detection.
 	ForceColors bool
 	// DisableColors removes ANSI colors and takes precedence over ForceColors.
 	DisableColors bool
@@ -25,54 +22,65 @@ type TextFormatter struct {
 	ShowLevel bool
 }
 
-func (formatter TextFormatter) format(record slog.Record, elapsed time.Duration) ([]byte, error) {
+// Format renders one JSON object with zero elapsed time and no automatic colors.
+func (formatter TextFormatter) Format(jsonContent []byte) ([]byte, error) {
+	return formatter.format(jsonContent, 0)
+}
+
+func (formatter TextFormatter) format(jsonContent []byte, elapsed time.Duration) ([]byte, error) {
+	fields, err := readJSONFields(jsonContent)
+	if err != nil {
+		return nil, err
+	}
 	var buffer, levels, timestamps bytes.Buffer
+	colors := formatter.ForceColors && !formatter.DisableColors
 	color, reset := "", ""
-	if !formatter.DisableColors {
-		color, reset = levelColor(record.Level), "\x1b[0m"
+	if colors {
+		for _, field := range fields {
+			if field.key == "level" && field.isString {
+				if recognized := levelColor(field.text); recognized != "" {
+					color, reset = recognized, "\x1b[0m"
+				}
+			}
+		}
 	}
 	separator := ""
 	if !formatter.DisableTimestamp && formatter.TimestampFormat == "" {
 		fmt.Fprintf(&timestamps, "[%04d]", max(int64(elapsed/time.Second), 0))
 	}
-	var formatErr error
-	record.Attrs(func(attr slog.Attr) bool {
-		if attr.Key == slog.TimeKey {
+	for _, field := range fields {
+		if field.key == "time" {
 			if formatter.DisableTimestamp || formatter.TimestampFormat == "" {
-				return true
+				continue
 			}
-			var timestamp time.Time
-			var valid bool
-			switch attr.Value.Kind() {
-			case slog.KindTime:
-				timestamp, valid = attr.Value.Time(), true
-			case slog.KindString:
-				var err error
-				timestamp, err = time.Parse(time.RFC3339Nano, attr.Value.String())
-				valid = err == nil
-			}
-			if valid {
-				formatted := strconv.Quote(timestamp.Format(formatter.TimestampFormat))
-				if timestamps.Len() > 0 {
-					timestamps.WriteByte(' ')
+			if field.isString {
+				if timestamp, err := time.Parse(time.RFC3339Nano, field.text); err == nil {
+					formatted := strconv.Quote(timestamp.Format(formatter.TimestampFormat))
+					if timestamps.Len() > 0 {
+						timestamps.WriteByte(' ')
+					}
+					timestamps.WriteByte('[')
+					timestamps.WriteString(formatted[1 : len(formatted)-1])
+					timestamps.WriteByte(']')
+					continue
 				}
-				timestamps.WriteByte('[')
-				timestamps.WriteString(formatted[1 : len(formatted)-1])
-				timestamps.WriteByte(']')
-				return true
 			}
 		}
-		text, isString := textValue(attr.Value)
-		switch attr.Key {
-		case slog.LevelKey:
+		text := field.text
+		switch field.key {
+		case "level":
 			if !formatter.ShowLevel {
-				return true
+				continue
 			}
 			if levels.Len() > 0 {
 				levels.WriteByte(' ')
 			}
-			levels.WriteString(color)
-			if isString {
+			fieldColor := ""
+			if colors && field.isString {
+				fieldColor = levelColor(text)
+			}
+			levels.WriteString(fieldColor)
+			if field.isString {
 				switch text {
 				case "DEBUG":
 					text = "DEBU"
@@ -80,36 +88,34 @@ func (formatter TextFormatter) format(record slog.Record, elapsed time.Duration)
 					text = "ERRO"
 				}
 				writeTextString(&levels, text)
-			} else if formatErr = writeJSONValue(&levels, attr.Value); formatErr != nil {
-				return false
+			} else {
+				levels.Write(field.raw)
 			}
-			levels.WriteString(reset)
-			return true
-		case slog.MessageKey:
-			if isString {
+			if fieldColor != "" {
+				levels.WriteString("\x1b[0m")
+			}
+			continue
+		case "msg":
+			if field.isString {
 				if text != "" {
 					buffer.WriteString(separator)
 					writeMessageString(&buffer, text)
 					separator = " "
 				}
-				return true
+				continue
 			}
 		}
 		buffer.WriteString(separator)
 		buffer.WriteString(color)
-		writeTextString(&buffer, attr.Key)
+		writeTextString(&buffer, field.key)
 		buffer.WriteString(reset)
 		buffer.WriteByte('=')
-		if isString {
+		if field.isString {
 			writeTextString(&buffer, text)
-		} else if formatErr = writeJSONValue(&buffer, attr.Value); formatErr != nil {
-			return false
+		} else {
+			buffer.Write(field.raw)
 		}
 		separator = " "
-		return true
-	})
-	if formatErr != nil {
-		return nil, formatErr
 	}
 	var output bytes.Buffer
 	output.Grow(levels.Len() + timestamps.Len() + buffer.Len() + 2)
@@ -149,15 +155,17 @@ func writeTextString(buffer *bytes.Buffer, value string) {
 	}
 }
 
-func levelColor(level slog.Level) string {
-	switch {
-	case level < slog.LevelInfo:
+func levelColor(level string) string {
+	switch level {
+	case "DEBUG", "DEBU":
 		return "\x1b[90m"
-	case level < slog.LevelWarn:
+	case "INFO":
 		return "\x1b[36m"
-	case level < slog.LevelError:
+	case "WARN", "WARNING":
 		return "\x1b[33m"
-	default:
+	case "ERROR", "ERRO":
 		return "\x1b[31m"
+	default:
+		return ""
 	}
 }

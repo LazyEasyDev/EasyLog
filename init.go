@@ -20,10 +20,8 @@ type FileOptions = fileoutput.Options
 // TerminalFormatter configures terminal-only text display.
 type TerminalFormatter = terminal.TextFormatter
 
-// TerminalOptions configures the terminal output created by Init.
-// A nil Writer disables output. A nil Formatter uses elapsed timestamps, a
-// visible level, and automatic colors. The formatter is copied, and the writer
-// remains caller-owned.
+// TerminalOptions configures terminal output; a nil Writer disables it, and writers remain caller-owned.
+// A nil Formatter uses elapsed time, visible levels, and auto colors; non-nil formatters are copied.
 type TerminalOptions struct {
 	Writer    io.Writer
 	Formatter *TerminalFormatter
@@ -51,10 +49,8 @@ var packageState struct {
 	closing  bool
 }
 
-// Init creates the package-level runtime and installs its logger as slog's default.
-// Its zero-value options enable no outputs or memory retention.
-// Terminal formatting changes only display; file and memory records remain JSON.
-// Init returns ErrAlreadyInitialized until the previous Close has finished.
+// Init installs the package runtime as slog's default; zero options disable outputs and memory.
+// It returns ErrAlreadyInitialized while initialized or closing.
 func Init(options InitOptions) error {
 	packageState.Lock()
 	defer packageState.Unlock()
@@ -81,12 +77,8 @@ func Init(options InitOptions) error {
 	return nil
 }
 
-// InitWithOutputs creates a package-level runtime using the supplied outputs
-// and installs its logger as slog's default.
-// On success, Sync and Close manage these outputs; the slice is copied.
-// Nil entries are skipped; typed-nil outputs are not supported.
-// It returns ErrAlreadyInitialized while initialized or closing, without
-// invoking or closing the supplied outputs.
+// InitWithOutputs installs a package runtime using New's output handling and ownership rules.
+// It leaves outputs untouched on ErrAlreadyInitialized; on success, its logger becomes slog's default.
 func InitWithOutputs(options Options, outputs []Output) error {
 	packageState.Lock()
 	defer packageState.Unlock()
@@ -111,8 +103,7 @@ func installRuntimeLocked(options Options, outputs []Output) {
 	slog.SetDefault(logger)
 }
 
-// Consumer returns the package-level memory consumer, or nil when retention is
-// disabled or EasyLog is not initialized.
+// Consumer returns the package memory consumer, or nil if retention is disabled or uninitialized.
 func Consumer() MemoryConsumer {
 	packageState.RLock()
 	defer packageState.RUnlock()
@@ -122,9 +113,8 @@ func Consumer() MemoryConsumer {
 	return packageState.instance.runtime.Consumer()
 }
 
-// Sync synchronizes the current package runtime's outputs.
-// It is a no-op when no runtime is installed. If shutdown starts after the
-// runtime is captured, it may return ErrClosed.
+// Sync synchronizes the package outputs, or does nothing when uninitialized.
+// It may return ErrClosed if shutdown races with the call.
 func Sync() error {
 	packageState.RLock()
 	instance := packageState.instance
@@ -135,13 +125,8 @@ func Sync() error {
 	return instance.runtime.Sync()
 }
 
-// Close restores the previous slog default, standard log writer, and flags if
-// EasyLog's logger is still the default, then closes the package runtime.
-// Global logging reconfiguration must be coordinated with initialization and Close.
-// Outputs release their owned resources; terminal output leaves its writer open.
-// It is safe to call more than once.
-// Calls made while shutdown is in progress return nil immediately; only the call
-// that starts shutdown waits for output and returns any output-close errors.
+// Close restores prior slog/log globals only if EasyLog is still default, then calls Runtime.Close.
+// Coordinate global logging changes with Init/Close; concurrent or repeated Close returns nil immediately.
 func Close() error {
 	packageState.Lock()
 	if packageState.instance == nil {

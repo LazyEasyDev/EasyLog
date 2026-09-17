@@ -43,15 +43,15 @@ type runtimeState struct {
 	closed   atomic.Bool
 }
 
-// Runtime coordinates the handler, outputs, and optional memory consumer.
+// Runtime coordinates logging, outputs, and optional memory retention.
+// Stop producers before Close; output methods must not reenter the runtime.
 type Runtime struct {
 	state *runtimeState
 	root  *handler
 }
 
-// New copies the output slice and coordinates writing, synchronization, and
-// shutdown of the supplied outputs. Nil entries are skipped; typed-nil outputs
-// are not supported. Each output retains ownership of its underlying resources.
+// New copies the output slice, skipping nil entries; typed-nil outputs are unsupported.
+// It manages output writes, Sync, and Close; outputs own their underlying resources.
 func New(options Options, outputs []Output) *Runtime {
 	level, isLevelVar := options.Level.(*slog.LevelVar)
 	if options.Level == nil || (isLevelVar && level == nil) {
@@ -65,7 +65,7 @@ func New(options Options, outputs []Output) *Runtime {
 		enrichers:   append([]Enricher(nil), options.Enrichers...),
 		outputs:     append([]Output(nil), outputs...),
 	}
-	state.encoders.New = func() any { return newRecordEncoder() }
+	state.encoders.New = func() any { return newRecordEncoder(state) }
 
 	if options.MemoryMaxBytes > 0 {
 		state.memory = newMemoryStore(options.MemoryMaxBytes)
@@ -115,10 +115,8 @@ func (r *Runtime) Sync() error {
 	return errors.Join(failures...)
 }
 
-// Close stops new logging calls, waits for active output I/O, and closes every
-// output in order. It does not call Sync. Stop producers before closing.
-// Duplicate calls return nil immediately, including while shutdown is in progress;
-// only the call that starts shutdown returns output-close errors.
+// Close stops logging, waits for active output I/O, and closes all outputs in order without Sync.
+// Concurrent or repeated calls return nil immediately; only the first reports close errors.
 func (r *Runtime) Close() error {
 	if !r.state.closed.CompareAndSwap(false, true) {
 		return nil
@@ -138,13 +136,9 @@ func (r *Runtime) Close() error {
 	return errors.Join(failures...)
 }
 
-func (s *runtimeState) write(ctx context.Context, record slog.Record) error {
-	jsonContent, err := s.encode(ctx, record)
-	if err != nil {
-		return err
-	}
+func (s *runtimeState) write(jsonLine []byte) error {
 	if s.memory != nil {
-		s.memory.append(jsonContent)
+		s.memory.append(jsonLine)
 	}
 	s.outputMu.Lock()
 	defer s.outputMu.Unlock()
@@ -157,7 +151,7 @@ func (s *runtimeState) write(ctx context.Context, record slog.Record) error {
 		if output == nil {
 			continue
 		}
-		if err := output.WriteRecord(record, jsonContent); err != nil {
+		if err := output.WriteRecord(jsonLine); err != nil {
 			failures = append(failures, fmt.Errorf("output %d write: %w", index, err))
 		}
 	}

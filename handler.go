@@ -34,7 +34,11 @@ func (h *handler) Handle(ctx context.Context, source slog.Record) error {
 		}
 	}
 
-	return h.state.write(ctx, h.prepare(source))
+	jsonLine, err := h.encode(ctx, source)
+	if err != nil {
+		return err
+	}
+	return h.state.write(jsonLine)
 }
 
 func (h *handler) WithAttrs(attrs []slog.Attr) slog.Handler {

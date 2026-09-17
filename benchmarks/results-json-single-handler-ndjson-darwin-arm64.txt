@@ -1,0 +1,60 @@
+goos: darwin
+goarch: arm64
+pkg: github.com/LazyEasyDev/EasyLog/benchmarks
+cpu: Apple M4
+BenchmarkJSON/workload=Message/logger=EasyLog         	  950720	       563.9 ns/op	      96 B/op	       1 allocs/op
+BenchmarkJSON/workload=Message/logger=EasyLog         	 1000000	       581.6 ns/op	      96 B/op	       1 allocs/op
+BenchmarkJSON/workload=Message/logger=EasyLog         	 1000000	       573.8 ns/op	      96 B/op	       1 allocs/op
+BenchmarkJSON/workload=Message/logger=EasyLog         	 1000000	       573.4 ns/op	      96 B/op	       1 allocs/op
+BenchmarkJSON/workload=Message/logger=EasyLog         	 1000000	       573.7 ns/op	      96 B/op	       1 allocs/op
+BenchmarkJSON/workload=Message/logger=EasyLog         	 1000000	       587.1 ns/op	      96 B/op	       1 allocs/op
+BenchmarkJSON/workload=Message/logger=Slog            	 2178487	       291.2 ns/op	       0 B/op	       0 allocs/op
+BenchmarkJSON/workload=Message/logger=Slog            	 2198266	       274.7 ns/op	       0 B/op	       0 allocs/op
+BenchmarkJSON/workload=Message/logger=Slog            	 2189690	       274.0 ns/op	       0 B/op	       0 allocs/op
+BenchmarkJSON/workload=Message/logger=Slog            	 2171748	       276.1 ns/op	       0 B/op	       0 allocs/op
+BenchmarkJSON/workload=Message/logger=Slog            	 2167636	       276.0 ns/op	       0 B/op	       0 allocs/op
+BenchmarkJSON/workload=Message/logger=Slog            	 2194454	       275.1 ns/op	       0 B/op	       0 allocs/op
+BenchmarkJSON/workload=Message/logger=Zap             	 3294175	       179.3 ns/op	       0 B/op	       0 allocs/op
+BenchmarkJSON/workload=Message/logger=Zap             	 3365781	       177.2 ns/op	       0 B/op	       0 allocs/op
+BenchmarkJSON/workload=Message/logger=Zap             	 3384097	       177.2 ns/op	       0 B/op	       0 allocs/op
+BenchmarkJSON/workload=Message/logger=Zap             	 3378278	       177.8 ns/op	       0 B/op	       0 allocs/op
+BenchmarkJSON/workload=Message/logger=Zap             	 3355395	       178.0 ns/op	       0 B/op	       0 allocs/op
+BenchmarkJSON/workload=Message/logger=Zap             	 3360806	       178.8 ns/op	       0 B/op	       0 allocs/op
+BenchmarkJSON/workload=Fields10/logger=EasyLog        	  304344	      1955 ns/op	    1736 B/op	       8 allocs/op
+BenchmarkJSON/workload=Fields10/logger=EasyLog        	  314043	      1956 ns/op	    1736 B/op	       8 allocs/op
+BenchmarkJSON/workload=Fields10/logger=EasyLog        	  314068	      1956 ns/op	    1736 B/op	       8 allocs/op
+BenchmarkJSON/workload=Fields10/logger=EasyLog        	  311940	      1954 ns/op	    1736 B/op	       8 allocs/op
+BenchmarkJSON/workload=Fields10/logger=EasyLog        	  295154	      2135 ns/op	    1736 B/op	       8 allocs/op
+BenchmarkJSON/workload=Fields10/logger=EasyLog        	  305941	      2015 ns/op	    1736 B/op	       8 allocs/op
+BenchmarkJSON/workload=Fields10/logger=Slog           	  668899	       963.2 ns/op	     328 B/op	       4 allocs/op
+BenchmarkJSON/workload=Fields10/logger=Slog           	  663826	       967.8 ns/op	     328 B/op	       4 allocs/op
+BenchmarkJSON/workload=Fields10/logger=Slog           	  682166	       956.3 ns/op	     328 B/op	       4 allocs/op
+BenchmarkJSON/workload=Fields10/logger=Slog           	  684732	       970.4 ns/op	     328 B/op	       4 allocs/op
+BenchmarkJSON/workload=Fields10/logger=Slog           	  673497	       967.8 ns/op	     328 B/op	       4 allocs/op
+BenchmarkJSON/workload=Fields10/logger=Slog           	  644972	       975.3 ns/op	     328 B/op	       4 allocs/op
+BenchmarkJSON/workload=Fields10/logger=Zap            	 1000000	       600.5 ns/op	     704 B/op	       1 allocs/op
+BenchmarkJSON/workload=Fields10/logger=Zap            	 1000000	       594.4 ns/op	     704 B/op	       1 allocs/op
+BenchmarkJSON/workload=Fields10/logger=Zap            	 1000000	       598.6 ns/op	     704 B/op	       1 allocs/op
+BenchmarkJSON/workload=Fields10/logger=Zap            	 1000000	       599.0 ns/op	     704 B/op	       1 allocs/op
+BenchmarkJSON/workload=Fields10/logger=Zap            	 1000000	       597.3 ns/op	     704 B/op	       1 allocs/op
+BenchmarkJSON/workload=Fields10/logger=Zap            	 1000000	       604.5 ns/op	     704 B/op	       1 allocs/op
+BenchmarkJSON/workload=Context10/logger=EasyLog       	  332912	      1810 ns/op	    1528 B/op	       7 allocs/op
+BenchmarkJSON/workload=Context10/logger=EasyLog       	  335178	      1787 ns/op	    1528 B/op	       7 allocs/op
+BenchmarkJSON/workload=Context10/logger=EasyLog       	  334872	      1789 ns/op	    1528 B/op	       7 allocs/op
+BenchmarkJSON/workload=Context10/logger=EasyLog       	  334705	      1794 ns/op	    1528 B/op	       7 allocs/op
+BenchmarkJSON/workload=Context10/logger=EasyLog       	  326800	      1822 ns/op	    1528 B/op	       7 allocs/op
+BenchmarkJSON/workload=Context10/logger=EasyLog       	  330320	      1806 ns/op	    1528 B/op	       7 allocs/op
+BenchmarkJSON/workload=Context10/logger=Slog          	 2123895	       281.9 ns/op	       0 B/op	       0 allocs/op
+BenchmarkJSON/workload=Context10/logger=Slog          	 2140653	       281.4 ns/op	       0 B/op	       0 allocs/op
+BenchmarkJSON/workload=Context10/logger=Slog          	 2108497	       282.4 ns/op	       0 B/op	       0 allocs/op
+BenchmarkJSON/workload=Context10/logger=Slog          	 2148232	       279.8 ns/op	       0 B/op	       0 allocs/op
+BenchmarkJSON/workload=Context10/logger=Slog          	 2137369	       280.5 ns/op	       0 B/op	       0 allocs/op
+BenchmarkJSON/workload=Context10/logger=Slog          	 2097741	       282.5 ns/op	       0 B/op	       0 allocs/op
+BenchmarkJSON/workload=Context10/logger=Zap           	 3237115	       185.7 ns/op	       0 B/op	       0 allocs/op
+BenchmarkJSON/workload=Context10/logger=Zap           	 3159069	       187.0 ns/op	       0 B/op	       0 allocs/op
+BenchmarkJSON/workload=Context10/logger=Zap           	 3183211	       187.3 ns/op	       0 B/op	       0 allocs/op
+BenchmarkJSON/workload=Context10/logger=Zap           	 3231704	       186.1 ns/op	       0 B/op	       0 allocs/op
+BenchmarkJSON/workload=Context10/logger=Zap           	 3172297	       188.0 ns/op	       0 B/op	       0 allocs/op
+BenchmarkJSON/workload=Context10/logger=Zap           	 3206295	       187.5 ns/op	       0 B/op	       0 allocs/op
+PASS
+ok  	github.com/LazyEasyDev/EasyLog/benchmarks	32.783s

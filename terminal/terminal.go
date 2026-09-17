@@ -3,22 +3,17 @@ package terminal
 
 import (
 	"io"
-	"log/slog"
 	"os"
-	"slices"
 	"sync"
 	"time"
 )
 
-const maxLineBufferBytes = 64 * 1024
-
 // Output writes complete records to a caller-owned writer.
 type Output struct {
-	mu         sync.Mutex
-	writer     io.Writer
-	formatter  *TextFormatter
-	startedAt  time.Time
-	lineBuffer []byte
+	mu        sync.Mutex
+	writer    io.Writer
+	formatter *TextFormatter
+	startedAt time.Time
 }
 
 func GetDefaultTextFormatter() TextFormatter {
@@ -31,17 +26,15 @@ func GetDefaultTextFormatter() TextFormatter {
 	}
 }
 
-// New creates a text output. A nil writer defaults to os.Stderr.
-// A nil formatter uses elapsed timestamps, a visible level, and automatic colors.
-// A supplied formatter is copied; its zero value hides the level.
-// Automatic colors are detected and elapsed timestamps start at output creation.
+// New creates text output; a nil writer uses os.Stderr and a nil formatter uses defaults.
+// The formatter is copied; colors are detected and elapsed time starts here.
 func New(writer io.Writer, formatter *TextFormatter) *Output {
 	output := NewJSON(writer)
 	configured := GetDefaultTextFormatter()
 	if formatter != nil {
 		configured = *formatter
 	}
-	configured.DisableColors = configured.DisableColors || (!configured.ForceColors && !autoColors(output.writer))
+	configured.ForceColors = !configured.DisableColors && (configured.ForceColors || autoColors(output.writer))
 	output.formatter = &configured
 	output.startedAt = time.Now()
 	return output
@@ -75,29 +68,20 @@ func autoColors(writer io.Writer) bool {
 	return err == nil && supported
 }
 
-// WriteRecord writes one JSON or text record followed by exactly one newline.
-func (o *Output) WriteRecord(record slog.Record, jsonContent []byte) error {
-	var data []byte
+// WriteRecord forwards JSON bytes unchanged, with empty input a no-op.
+// Text mode validates one JSON object before writing its formatted line.
+func (o *Output) WriteRecord(jsonContent []byte) error {
+	data := jsonContent
 	if o.formatter != nil {
 		var err error
-		data, err = o.formatter.format(record, time.Since(o.startedAt))
+		data, err = o.formatter.format(jsonContent, time.Since(o.startedAt))
 		if err != nil {
 			return err
 		}
 	}
 	o.mu.Lock()
 	defer o.mu.Unlock()
-	if o.formatter != nil {
-		return writeAll(o.writer, data)
-	}
-	o.lineBuffer = slices.Grow(o.lineBuffer[:0], len(jsonContent)+1)
-	o.lineBuffer = append(o.lineBuffer, jsonContent...)
-	o.lineBuffer = append(o.lineBuffer, '\n')
-	err := writeAll(o.writer, o.lineBuffer)
-	if cap(o.lineBuffer) > maxLineBufferBytes {
-		o.lineBuffer = nil
-	}
-	return err
+	return writeAll(o.writer, data)
 }
 
 // Sync is a no-op because Output has no pending buffered writes.

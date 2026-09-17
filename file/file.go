@@ -2,6 +2,7 @@
 package file
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -10,9 +11,9 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
-	"slices"
 	"sort"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 )
@@ -21,7 +22,6 @@ const (
 	defaultMaxSegmentBytes int64 = 8 << 20
 	defaultMaxSegments           = 7
 	defaultPermissions           = 0o644
-	maxLineBufferBytes           = 64 * 1024
 	dateLayout                   = "20060102"
 	logsDirectoryName            = "logs"
 	debugPrefix                  = "debug"
@@ -80,11 +80,10 @@ type levelStore struct {
 type Output struct {
 	mu sync.Mutex
 
-	options    Options
-	now        func() time.Time
-	stores     [len(levelPrefixes)]levelStore
-	closed     bool
-	lineBuffer []byte
+	options Options
+	now     func() time.Time
+	stores  [len(levelPrefixes)]levelStore
+	closed  bool
 }
 
 // New creates a file output under a managed logs directory.
@@ -122,18 +121,22 @@ func newWithClock(options Options, now func() time.Time) (*Output, error) {
 	return output, nil
 }
 
-// WriteRecord writes one complete record, rotating first when necessary.
-// If segment creation fails, the record is dropped; later calls retry creation.
-// It returns an error only when the record cannot be fully written.
-func (o *Output) WriteRecord(record slog.Record, jsonContent []byte) error {
-	lineBytes := int64(len(jsonContent)) + 1
+// WriteRecord routes by JSON level and writes the complete line unchanged.
+func (o *Output) WriteRecord(jsonContent []byte) error {
+	lineBytes := int64(len(jsonContent))
 	o.mu.Lock()
 	defer o.mu.Unlock()
 	if o.closed {
 		return ErrClosed
 	}
+	if len(jsonContent) == 0 {
+		return nil
+	}
 
-	store := o.storeForLevel(record.Level)
+	store, err := o.storeForJSON(jsonContent)
+	if err != nil {
+		return err
+	}
 	date := o.currentDate()
 	var prepareErr error
 	if store.active == nil {
@@ -151,13 +154,7 @@ func (o *Output) WriteRecord(record slog.Record, jsonContent []byte) error {
 	if store.active == nil {
 		return prepareErr
 	}
-	o.lineBuffer = slices.Grow(o.lineBuffer[:0], len(jsonContent)+1)
-	o.lineBuffer = append(o.lineBuffer, jsonContent...)
-	o.lineBuffer = append(o.lineBuffer, '\n')
-	written, writeErr := writeLine(store.active, o.lineBuffer)
-	if cap(o.lineBuffer) > maxLineBufferBytes {
-		o.lineBuffer = nil
-	}
+	written, writeErr := writeLine(store.active, jsonContent)
 	store.activeBytes += int64(written)
 	if writeErr == nil {
 		return nil
@@ -168,9 +165,6 @@ func (o *Output) WriteRecord(record slog.Record, jsonContent []byte) error {
 }
 
 func writeLine(writer io.Writer, data []byte) (int, error) {
-	if len(data) == 0 {
-		data = []byte{'\n'}
-	}
 	var total int
 	for len(data) > 0 {
 		written, err := writer.Write(data)
@@ -428,16 +422,40 @@ func (o *Output) cleanupClosedSegments(store *levelStore) error {
 	return nil
 }
 
-func (o *Output) storeForLevel(level slog.Level) *levelStore {
+func (o *Output) storeForJSON(jsonContent []byte) (*levelStore, error) {
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal(jsonContent, &fields); err != nil {
+		return nil, fmt.Errorf("read log JSON: %w", err)
+	}
+	if fields == nil {
+		return nil, errors.New("easylog/file: expected a JSON object")
+	}
+	level := slog.LevelInfo
+	var name string
+	if json.Unmarshal(fields["level"], &name) == nil {
+		name = strings.ToUpper(name)
+		switch name {
+		case "DEBU":
+			name = "DEBUG"
+		case "WARNING":
+			name = "WARN"
+		case "ERRO":
+			name = "ERROR"
+		}
+		var parsed slog.Level
+		if parsed.UnmarshalText([]byte(name)) == nil {
+			level = parsed
+		}
+	}
 	switch {
 	case level < slog.LevelInfo:
-		return &o.stores[debugBucket]
+		return &o.stores[debugBucket], nil
 	case level < slog.LevelWarn:
-		return &o.stores[infoBucket]
+		return &o.stores[infoBucket], nil
 	case level < slog.LevelError:
-		return &o.stores[warningBucket]
+		return &o.stores[warningBucket], nil
 	default:
-		return &o.stores[errorBucket]
+		return &o.stores[errorBucket], nil
 	}
 }
 
