@@ -48,9 +48,10 @@ Both copy the output slice, skip nil entries, and manage `Sync`/`Close`; typed-n
 `AddSource` for location, `ReplaceAttr` for JSON customization, and context `Enrichers`.
 Positive `MemoryMaxBytes` enables retention; default off, `DefaultMemoryMaxBytes` is 8 MiB.
 
-Pooled standard `slog.JSONHandler` encoders process the source record and stored
-`With`/`WithGroup` operations per enabled call. Enrichers run once; filtering, `LogValuer`
-resolution, and `ReplaceAttr` run per call, not at binding or per output; bound values are not cached.
+The standard `slog.JSONHandler` prepares stored `With`/`WithGroup` fields when they are bound
+and reuses them on each enabled call. Bound `LogValuer` resolution, filtering, and `ReplaceAttr`
+therefore run at binding time. Enrichers and fields passed directly to a log call run per call;
+none of this work is repeated per output.
 Top-level user keys/groups `time`, `level`, `msg`, and `source` are silently filtered,
 including replacement collisions and inlined unnamed groups. Named nested keys and metadata replacement are allowed.
 Level filtering uses the original slog severity; display and file routing use final JSON.

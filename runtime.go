@@ -35,7 +35,6 @@ type runtimeState struct {
 	addSource   bool
 	replaceAttr func([]string, slog.Attr) slog.Attr
 	enrichers   []Enricher
-	encoders    sync.Pool
 
 	memory   *memoryStore
 	outputs  []Output
@@ -65,14 +64,12 @@ func New(options Options, outputs []Output) *Runtime {
 		enrichers:   append([]Enricher(nil), options.Enrichers...),
 		outputs:     append([]Output(nil), outputs...),
 	}
-	state.encoders.New = func() any { return newRecordEncoder(state) }
-
 	if options.MemoryMaxBytes > 0 {
 		state.memory = newMemoryStore(options.MemoryMaxBytes)
 	}
 
 	runtime := &Runtime{state: state}
-	runtime.root = &handler{state: state}
+	runtime.root = &handler{state: state, jsonHandler: newJSONHandler(state)}
 	return runtime
 }
 

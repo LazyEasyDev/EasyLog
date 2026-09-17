@@ -5,14 +5,11 @@ import (
 	"log/slog"
 )
 
-type handlerOperation struct {
-	attrs []slog.Attr
-	group string
-}
-
 type handler struct {
-	state      *runtimeState
-	operations []handlerOperation
+	state       *runtimeState
+	jsonHandler slog.Handler
+	grouped     bool
+	ignoreAttrs bool
 }
 
 func (h *handler) Enabled(_ context.Context, level slog.Level) bool {
@@ -34,30 +31,39 @@ func (h *handler) Handle(ctx context.Context, source slog.Record) error {
 		}
 	}
 
-	jsonLine, err := h.encode(ctx, source)
-	if err != nil {
-		return err
-	}
-	return h.state.write(jsonLine)
+	return h.encode(ctx, source)
 }
 
 func (h *handler) WithAttrs(attrs []slog.Attr) slog.Handler {
 	if len(attrs) == 0 {
 		return h
 	}
-	copied := append([]slog.Attr(nil), attrs...)
-	operations := append([]handlerOperation(nil), h.operations...)
-	operations = append(operations, handlerOperation{attrs: copied})
-	return &handler{state: h.state, operations: operations}
+	if h.ignoreAttrs {
+		return h
+	}
+	if !h.grouped {
+		attrs = filterReservedAttrs(attrs)
+	}
+	child := *h
+	child.jsonHandler = h.jsonHandler.WithAttrs(attrs)
+	return &child
 }
 
 func (h *handler) WithGroup(name string) slog.Handler {
 	if name == "" {
 		return h
 	}
-	operations := append([]handlerOperation(nil), h.operations...)
-	operations = append(operations, handlerOperation{group: name})
-	return &handler{state: h.state, operations: operations}
+	if h.ignoreAttrs {
+		return h
+	}
+	child := *h
+	if !h.grouped && isReservedKey(name) {
+		child.ignoreAttrs = true
+		return &child
+	}
+	child.jsonHandler = h.jsonHandler.WithGroup(name)
+	child.grouped = true
+	return &child
 }
 
 func isReservedKey(key string) bool {

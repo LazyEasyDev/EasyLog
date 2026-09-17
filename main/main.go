@@ -43,8 +43,8 @@ func main() {
 	}
 	defer easylog.Close()
 
-	slog.Info("application started", "address", ":8080", "student", student)
-	slog.Warn("request retrying", "attempt", 2)
+	slog.With("xxs", student).Info("application started", "address", ":8080", "student", student)
+	slog.With("vff", "bbb").Warn("request retrying", "attempt", 2)
 	slog.Error("request failed", "status", 500)
 	time.Sleep(2 * time.Second)
 	slog.Debug("debugging information", "student", student)

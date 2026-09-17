@@ -9,27 +9,41 @@ formatter has not been measured here.
 
 ## Current JSON Comparison
 
-September 17, 2026: current JSON-only workspace implementation, Apple M4,
+September 17, 2026: JSON-only workspace after the reusable bound-handler refactor, Apple M4,
 macOS `darwin/arm64`, Go 1.25.1, Zap v1.28.0. Six 500 ms samples per case,
 `GOMAXPROCS=1`, no race instrumentation. The historical workloads and logger
 configuration below were reused for EasyLog Info, slog Info, and Zap typed.
+`Message` has no fields; `Fields10` constructs ten fields per call; `Context10`
+binds those fields before timing, so the initial `With(...)` cost is excluded.
 EasyLog used `terminal.NewJSON(io.Discard)` through its runtime; slog used
 JSONHandler; Zap used a locked JSON sink. Source, sampling, memory retention,
 enrichers, and custom replacement were disabled. All nine JSON-content,
 timestamp, and NDJSON-framing parity checks passed before timing.
 
-Median `ns/op` from [results-json-only-20260917-darwin-arm64.txt](results-json-only-20260917-darwin-arm64.txt):
+Median `ns/op` from [results-json-after-bound-reuse-20260917-darwin-arm64.txt](results-json-after-bound-reuse-20260917-darwin-arm64.txt):
 
 | Implementation | Message | Fields10 | Context10 |
 | --- | ---: | ---: | ---: |
-| EasyLog Info | 582.80 | 1736.50 | 1633.00 |
-| slog Info | 272.70 | 948.70 | 280.65 |
-| Zap typed | 178.10 | 589.10 | 186.75 |
+| EasyLog Info | 362.90 | 1436.00 | 387.15 |
+| slog Info | 275.45 | 967.55 | 283.20 |
+| Zap typed | 177.85 | 599.05 | 187.45 |
 
-In Message/Fields10/Context10 order: EasyLog used 216 / 1312 / 1568 B/op
-and 4 / 12 / 16 allocs/op; slog used 0 / 328 / 0 B/op and 0 / 4 / 0 allocs/op;
+In Message/Fields10/Context10 order: EasyLog used 96 / 1192 / 256 B/op
+and 1 / 9 / 1 allocs/op; slog used 0 / 328 / 0 B/op and 0 / 4 / 0 allocs/op;
 Zap used 0 / 704 / 0 B/op and 0 / 1 / 0 allocs/op. This measures serial JSON
 CPU/allocation cost, not file I/O, text rendering, or concurrent scaling.
+
+Before this refactor, EasyLog medians were 372.30 / 1444.00 / 1316.00 ns/op,
+with 96 / 1192 / 1448 B/op and 1 / 9 / 13 allocs/op, as preserved in
+[results-json-after-conditional-replace-20260917-darwin-arm64.txt](results-json-after-conditional-replace-20260917-darwin-arm64.txt).
+Context10's median is now 70.6% lower (about 3.4x throughput), with 12 fewer
+allocations per call. Fields10 is essentially unchanged; small timing differences
+also appear in unchanged controls and should not be treated as isolated code effects.
+
+Before the earlier conditional ReplaceAttr fix, EasyLog medians were 582.80 / 1736.50 / 1633.00 ns/op,
+with 216 / 1312 / 1568 B/op and 4 / 12 / 16 allocs/op. That full report is
+preserved in [results-json-only-20260917-darwin-arm64.txt](results-json-only-20260917-darwin-arm64.txt).
+All samples are retained; medians limit the influence of occasional slow samples.
 
 ## Historical JSON Comparison
 

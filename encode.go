@@ -6,15 +6,18 @@ import (
 	"log/slog"
 )
 
-const maxPooledEncoderBufferBytes = 64 * 1024
-
-type recordEncoder struct {
-	buffer  bytes.Buffer
-	handler *slog.JSONHandler
+type jsonWriter struct {
+	state *runtimeState
 }
 
-func newRecordEncoder(state *runtimeState) *recordEncoder {
-	encoder := &recordEncoder{}
+func (w jsonWriter) Write(jsonLine []byte) (int, error) {
+	if err := w.state.write(bytes.Clone(jsonLine)); err != nil {
+		return 0, err
+	}
+	return len(jsonLine), nil
+}
+
+func newJSONHandler(state *runtimeState) *slog.JSONHandler {
 	options := &slog.HandlerOptions{AddSource: state.addSource}
 	if state.replaceAttr != nil {
 		options.ReplaceAttr = func(groups []string, attr slog.Attr) slog.Attr {
@@ -26,49 +29,19 @@ func newRecordEncoder(state *runtimeState) *recordEncoder {
 			return attr
 		}
 	}
-	encoder.handler = slog.NewJSONHandler(&encoder.buffer, options)
-	return encoder
+	return slog.NewJSONHandler(jsonWriter{state: state}, options)
 }
 
-func (h *handler) encode(ctx context.Context, source slog.Record) ([]byte, error) {
-	encoder := h.state.encoders.Get().(*recordEncoder)
-	defer func() {
-		if encoder.buffer.Cap() > maxPooledEncoderBufferBytes {
-			encoder.buffer = bytes.Buffer{}
-		} else {
-			encoder.buffer.Reset()
-		}
-		h.state.encoders.Put(encoder)
-	}()
-	var handler slog.Handler = encoder.handler
-	grouped := false
-	ignoreAttrs := false
-	for _, operation := range h.operations {
-		if operation.group != "" {
-			if !grouped && isReservedKey(operation.group) {
-				ignoreAttrs = true
-				break
-			}
-			handler = handler.WithGroup(operation.group)
-			grouped = true
-		} else if grouped {
-			handler = handler.WithAttrs(operation.attrs)
-		} else {
-			handler = handler.WithAttrs(filterReservedAttrs(operation.attrs))
-		}
-	}
+func (h *handler) encode(ctx context.Context, source slog.Record) error {
 	record := source
-	if ignoreAttrs || (!grouped && source.NumAttrs() != 0) {
+	if h.ignoreAttrs || (!h.grouped && source.NumAttrs() != 0) {
 		record = slog.NewRecord(source.Time, source.Level, source.Message, source.PC)
-		if !ignoreAttrs {
+		if !h.ignoreAttrs {
 			source.Attrs(func(attr slog.Attr) bool {
 				record.AddAttrs(filterReservedAttr(attr))
 				return true
 			})
 		}
 	}
-	if err := handler.Handle(ctx, record); err != nil {
-		return nil, err
-	}
-	return bytes.Clone(encoder.buffer.Bytes()), nil
+	return h.jsonHandler.Handle(ctx, record)
 }
