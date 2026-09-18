@@ -24,11 +24,15 @@ func (w *jsonWriter) Write(jsonLine []byte) (int, error) {
 	return len(jsonLine), nil
 }
 
-func newJSONHandler(writer *jsonWriter) *slog.JSONHandler {
-	return slog.NewJSONHandler(writer, nil)
+func newJSONHandler(writer *jsonWriter, addSource bool) *slog.JSONHandler {
+	return slog.NewJSONHandler(writer, &slog.HandlerOptions{AddSource: addSource})
 }
 
-func (h *handler) encodeJSON(ctx context.Context, record slog.Record) ([]byte, error) {
+func (h *handler) encodeJSON(ctx context.Context, record slog.Record, callAttrs []slog.Attr) ([]byte, error) {
+	if h.state.addSource || len(h.bound) != 0 || len(h.groups) != 0 {
+		record = slog.NewRecord(record.Time, record.Level, record.Message, record.PC)
+		record.AddAttrs(callAttrs...)
+	}
 	h.jsonWriter.mu.Lock()
 	defer func() {
 		h.jsonWriter.jsonLine = nil
@@ -40,7 +44,7 @@ func (h *handler) encodeJSON(ctx context.Context, record slog.Record) ([]byte, e
 	return h.jsonWriter.jsonLine, nil
 }
 
-func (h *handler) prepareRecord(source slog.Record) slog.Record {
+func (h *handler) prepareRecord(source slog.Record) (slog.Record, []slog.Attr) {
 	record := slog.NewRecord(source.Time, source.Level, validString(source.Message), source.PC)
 	if h.state.addSource {
 		if location := source.Source(); location != nil {
@@ -53,68 +57,75 @@ func (h *handler) prepareRecord(source slog.Record) slog.Record {
 	if !h.ignoreAttrs {
 		direct = make([]slog.Attr, 0, source.NumAttrs())
 		source.Attrs(func(attr slog.Attr) bool {
-			direct = append(direct, attr)
+			direct = h.appendPreparedAttr(direct, attr, h.groups)
 			return true
 		})
-		direct = h.prepareAttrs(direct, h.groups)
 	}
+	callAttrs := direct
 	for depth := len(h.groups); depth >= 0; depth-- {
 		if depth < len(h.bound) && len(h.bound[depth]) != 0 {
-			combined := make([]slog.Attr, 0, len(h.bound[depth])+len(direct))
-			combined = append(combined, h.bound[depth]...)
-			direct = append(combined, direct...)
+			if len(direct) == 0 {
+				direct = h.bound[depth]
+			} else {
+				combined := make([]slog.Attr, 0, len(h.bound[depth])+len(direct))
+				combined = append(combined, h.bound[depth]...)
+				direct = append(combined, direct...)
+			}
 		}
 		if depth > 0 && len(direct) != 0 {
 			direct = []slog.Attr{{Key: h.groups[depth-1], Value: slog.GroupValue(direct...)}}
 		}
 	}
 	record.AddAttrs(direct...)
-	return record
+	return record, callAttrs
 }
 
 func (h *handler) prepareAttrs(attrs []slog.Attr, groups []string) []slog.Attr {
 	prepared := make([]slog.Attr, 0, len(attrs))
 	for _, attr := range attrs {
-		if len(groups) == 0 && isReservedKey(attr.Key) {
-			continue
-		}
-		attr.Value = attr.Value.Resolve()
-		if attr.Value.Kind() != slog.KindGroup && h.state.replaceAttr != nil {
-			attr = h.state.replaceAttr(groups, attr)
-			if len(groups) == 0 && isReservedKey(attr.Key) {
-				continue
-			}
-			attr.Value = attr.Value.Resolve()
-		}
-		if attr.Equal(slog.Attr{}) {
-			continue
-		}
-		attr.Key = validString(attr.Key)
-		if attr.Value.Kind() == slog.KindAny {
-			if location, ok := attr.Value.Any().(*slog.Source); ok && location != nil {
-				attr.Value = slog.GroupValue(sourceAttrs(location)...)
-			}
-		}
-		if attr.Value.Kind() == slog.KindGroup {
-			path := groups
-			if attr.Key != "" {
-				path = append(slices.Clone(groups), attr.Key)
-			}
-			children := h.prepareAttrs(attr.Value.Group(), path)
-			if len(children) == 0 {
-				continue
-			}
-			if attr.Key == "" {
-				prepared = append(prepared, children...)
-				continue
-			}
-			attr.Value = slog.GroupValue(children...)
-		} else {
-			attr.Value = freezeValue(attr.Value)
-		}
-		prepared = append(prepared, attr)
+		prepared = h.appendPreparedAttr(prepared, attr, groups)
 	}
 	return prepared
+}
+
+func (h *handler) appendPreparedAttr(prepared []slog.Attr, attr slog.Attr, groups []string) []slog.Attr {
+	if len(groups) == 0 && isReservedKey(attr.Key) {
+		return prepared
+	}
+	attr.Value = attr.Value.Resolve()
+	if attr.Value.Kind() != slog.KindGroup && h.state.replaceAttr != nil {
+		attr = h.state.replaceAttr(groups, attr)
+		if len(groups) == 0 && isReservedKey(attr.Key) {
+			return prepared
+		}
+		attr.Value = attr.Value.Resolve()
+	}
+	if attr.Equal(slog.Attr{}) {
+		return prepared
+	}
+	attr.Key = validString(attr.Key)
+	if attr.Value.Kind() == slog.KindAny {
+		if location, ok := attr.Value.Any().(*slog.Source); ok && location != nil {
+			attr.Value = slog.GroupValue(sourceAttrs(location)...)
+		}
+	}
+	if attr.Value.Kind() == slog.KindGroup {
+		path := groups
+		if attr.Key != "" {
+			path = append(slices.Clone(groups), attr.Key)
+		}
+		children := h.prepareAttrs(attr.Value.Group(), path)
+		if len(children) == 0 {
+			return prepared
+		}
+		if attr.Key == "" {
+			return append(prepared, children...)
+		}
+		attr.Value = slog.GroupValue(children...)
+	} else {
+		attr.Value = freezeValue(attr.Value)
+	}
+	return append(prepared, attr)
 }
 
 func sourceAttrs(location *slog.Source) []slog.Attr {

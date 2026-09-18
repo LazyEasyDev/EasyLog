@@ -71,7 +71,7 @@ func New(options Options, outputs []Output) *Runtime {
 
 	runtime := &Runtime{state: state}
 	writer := &jsonWriter{}
-	runtime.root = &handler{state: state, jsonHandler: newJSONHandler(writer), jsonWriter: writer}
+	runtime.root = &handler{state: state, jsonHandler: newJSONHandler(writer, options.AddSource), jsonWriter: writer}
 	return runtime
 }
 

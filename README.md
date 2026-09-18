@@ -411,11 +411,19 @@ Terminal `Sync`/`Close` are no-ops: flush and close caller-owned writers yoursel
 
 ### Encoding
 
-Each enabled call builds a complete `slog.Record` and is encoded once by a standard
-`slog.JSONHandler`. EasyLog retains fields prepared by `With` and combines them
-with the call's fields using the nesting from `WithGroup`. Bound values are resolved,
-replaced, and snapshotted at binding; direct fields and enrichers are prepared per
-call, never once per destination. Duplicate keys and attribute order are preserved.
+Each enabled call builds a complete `slog.Record` for outputs and produces one JSON
+line through a standard `slog.JSONHandler`. EasyLog retains fields prepared by
+`With` and combines them with the call's fields using the nesting from `WithGroup`.
+Bound values are resolved, replaced, and snapshotted at binding; direct fields and
+enrichers are prepared per call, never once per destination. Duplicate keys and
+attribute order are preserved.
+
+Derived JSON handlers preformat bound attributes at `With` time and reuse those
+bytes, whether `AddSource` is enabled or not. They receive only the new call
+attributes, while outputs still receive the complete record. The standard handler
+generates source metadata per call, outside `WithGroup` groups and before `msg`,
+following slog's field order. Preparation avoids a separate copy of incoming
+fields and reuses read-only bound slices when no merge is needed.
 
 Preparation resolves `LogValuer` values and runs custom replacement before output.
 Time-valued attributes become formatted strings; arbitrary values are snapshotted
@@ -455,10 +463,12 @@ type Output interface {
 
 The record is complete: it contains enriched, filtered, resolved and replaced
 custom attributes, including bound fields and group nesting. `Time`, `Level`, and
-`Message` contain the protected metadata. When `AddSource` is enabled, a prepared
-`source` group holds its function, file, and line; formatters must not infer source
-visibility from `PC` alone. A plain `slog.JSONHandler` with default options can
-encode this record without further binding, replacement, or source generation.
+`Message` contain the protected metadata. When `AddSource` is enabled and a source
+location is available, a prepared `source` group holds its function, file, and line;
+formatters must not infer source visibility from `PC` alone. A plain
+`slog.JSONHandler` with default options can encode the same fields without further
+binding, replacement, or source generation. Its `source` attribute appears after
+`msg`, unlike the runtime JSON's native slog metadata order; the bytes need not match.
 Treat attributes, nested group slices, and raw JSON values as read-only; call
 `record.Clone()` before adding attributes and deep-copy nested data before changing
 it. Outputs may retain the record and JSON bytes without rerunning callbacks.

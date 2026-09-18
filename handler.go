@@ -34,8 +34,8 @@ func (h *handler) Handle(ctx context.Context, source slog.Record) error {
 		}
 	}
 
-	record := h.prepareRecord(source)
-	jsonLine, err := h.encodeJSON(ctx, record)
+	record, callAttrs := h.prepareRecord(source)
+	jsonLine, err := h.encodeJSON(ctx, record, callAttrs)
 	if err != nil {
 		return err
 	}
@@ -58,6 +58,7 @@ func (h *handler) WithAttrs(attrs []slog.Attr) slog.Handler {
 	copy(child.bound, h.bound)
 	depth := len(h.groups)
 	child.bound[depth] = append(slices.Clone(child.bound[depth]), attrs...)
+	child.jsonHandler = h.jsonHandler.WithAttrs(attrs)
 	return &child
 }
 
@@ -74,6 +75,7 @@ func (h *handler) WithGroup(name string) slog.Handler {
 		return &child
 	}
 	child.groups = append(slices.Clone(h.groups), validString(name))
+	child.jsonHandler = h.jsonHandler.WithGroup(validString(name))
 	return &child
 }
 
