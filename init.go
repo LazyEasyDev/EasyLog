@@ -147,7 +147,7 @@ func Sync() error {
 	return instance.runtime.Sync()
 }
 
-// Close restores prior slog/log globals only if EasyLog is still default, then calls Runtime.Close.
+// Close restores prior slog/log globals only if the original installed logger is still default.
 // It returns ErrInitializing without waiting or cancelling when initialization is in progress.
 // Coordinate global logging changes with Init/Close; concurrent or repeated Close returns nil immediately.
 func Close() error {

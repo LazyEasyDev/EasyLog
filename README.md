@@ -3,11 +3,11 @@
 Readable terminal logs, rotating JSON files, and optional in-memory retention,
 built on Go's standard `log/slog`. Use ordinary slog calls with one or more outputs.
 
-**Go 1.25+** · **[MIT license](LICENSE)**
+**Go 1.25+** | **[MIT license](LICENSE)**
 
-[Quick start](#quick-start) · [Configuration](#configuration) ·
-[Logging](#logging) · [Outputs](#outputs) · [Memory](#memory) ·
-[Shutdown](#shutdown) · [Safety](#concurrency-and-callbacks)
+[Quick start](#quick-start) | [Configuration](#configuration) |
+[Logging](#logging) | [Outputs](#outputs) | [Memory](#memory) |
+[Shutdown](#shutdown) | [Safety](#concurrency-and-callbacks)
 
 ## Install
 
@@ -523,9 +523,11 @@ reuses its buffer; capacity after a large line is retained.
   untouched. Failed setup releases its reservation so initialization can be retried.
 - During setup, package `Consumer()` returns nil, `Sync()` is a no-op, and `Close()`
   returns `ErrInitializing` without waiting or cancelling initialization.
-- Package `Close` restores earlier `slog`/`log` settings only if the exact logger
-  installed by `Init` is still default. Replacing it with a child created by `With`
-  bypasses restoration too; that child remains tied to the closed runtime.
+- Package `Close` restores earlier `slog`/`log` settings only while the exact logger
+	installed by `Init` or `InitWithOutputs` remains default. If you install a different
+	default, you own its restoration, including EasyLog children and custom wrappers.
+	EasyLog still closes its runtime; children or wrappers forwarding to that runtime
+	can no longer write through it after shutdown.
 - Runtime closure rejects new records and waits for output I/O, but does not wait
   for ongoing preparation/encoding. No records enter memory after shutdown
   completes; an already captured memory consumer remains drainable.
