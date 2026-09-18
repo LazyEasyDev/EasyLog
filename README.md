@@ -296,6 +296,11 @@ like `info_20260917_0.jsonl`. Defaults: 8 MiB segments, seven segments per level
 (including active), and permissions `0644`. Rotation uses UTC dates and size;
 retention is best effort, not a hard disk quota.
 
+Missing directories are created with `0755`, subject to the process's `umask`.
+Existing directories are reused without validating or changing their permissions
+or ownership. New segment files use `Permissions` (`0644` by default), subject to
+`umask`; resumed files keep their existing permissions.
+
 For `New`, import `github.com/LazyEasyDev/EasyLog/file`, call
 `file.New(file.Options{Directory: directory})`, check its error, and include the
 result in the output slice. Use one output/process per managed directory.
@@ -381,6 +386,7 @@ outputs. For a global runtime, call `easylog.Consumer()` instead.
 `Take` is nonblocking; an empty queue returns `nil, nil`. Returned lines are
 independent mutable copies. Oldest records are evicted to fit; oversized records
 are skipped without evicting others. Limits count JSON bytes, not total heap usage.
+The queue reuses ring-buffer slots and retains spare capacity until fully drained.
 Join lines with `bytes.Join(page, nil)` for NDJSON; use `[]json.RawMessage` for JSON
 arrays, since `[][]byte` marshals as base64 strings.
 
@@ -434,6 +440,9 @@ are serialized. Callbacks may run concurrently; synchronize their mutable state.
 
 Top-level user keys/groups `time`, `level`, `msg`, and `source` are reserved and
 silently filtered, including replacement collisions and inlined unnamed groups.
+User fields with reserved root keys are omitted before `ReplaceAttr`, without
+resolving their values. For example, `logger.Info("hello", "msg", "override")` behaves like
+`logger.Info("hello")`.
 These names are allowed inside named groups. Replacement may change built-in
 metadata. Original slog severity controls filtering; final JSON controls display
 and file routing.
@@ -464,6 +473,7 @@ this can deadlock. Coordinate ownership when sharing outputs across runtimes.
 
 ### File Details
 
+- Directory ownership and access controls are the application's responsibility.
 - Final JSON `level` chooses `debug_`, `info_`, `warn_`, or `err_`. Standard slog
   strings and offsets such as `INFO+2` are bucketed by severity. Missing, removed,
   renamed, unknown, or non-string levels route to INFO.
@@ -473,9 +483,12 @@ this can deadlock. Coordinate ownership when sharing outputs across runtimes.
   an oversized record can exceed the threshold in an empty segment.
 - Rotation attempts to sync the old segment but ignores sync failures. Explicit
   `Sync` reports active-segment errors, not earlier ignored failures.
+- Resume and previous-segment close errors are returned even if fallback or rotation
+	writes the current record successfully. Such an error does not imply the record
+	was lost; blindly retrying may duplicate it.
 - Cleanup runs on segment opening/rotation, not at startup or in the background.
-  Failed deletion ends that attempt; later openings retry. Cleanup failures do not
-  turn successful writes into errors, so disk usage is not strictly bounded.
+	Failed deletion ends that attempt; later openings retry. Cleanup errors are ignored,
+	so disk usage is not strictly bounded.
 - Failed segment creation drops that file record without writing to the old segment
   or replaying later. Later calls retry creation; other outputs are still attempted.
 - Short writes continue with the remainder. Partial-write errors are not replayed;
@@ -495,9 +508,11 @@ of JSON time; a Go timestamp layout does not synthesize a missing JSON timestamp
 ### Lifecycle Details
 
 Close disables new calls, waits for active output I/O, and closes every output.
-Active enrichers and encoding are not awaited; late calls can still append to
-memory before observing closure. A captured consumer remains drainable after Close.
-Retention precedes output I/O, including when destinations fail.
+Active enrichers and encoding are not awaited. Under the output lock, calls check
+for closure before retaining records or writing outputs. Once the first Close
+finishes, no more records can enter memory; a captured consumer remains drainable.
+Retention precedes that record's output I/O, including when destinations fail,
+but waits behind earlier output I/O.
 
 Duplicate closes return nil immediately; only the first waits and reports errors.
 A blocked output can block shutdown indefinitely. Runtime `Sync` returns `ErrClosed`

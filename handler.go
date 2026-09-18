@@ -76,20 +76,22 @@ func isReservedKey(key string) bool {
 }
 
 func filterReservedAttrs(attrs []slog.Attr) []slog.Attr {
-	filtered := make([]slog.Attr, len(attrs))
-	for index, attr := range attrs {
-		filtered[index] = filterReservedAttr(attr)
+	filtered := make([]slog.Attr, 0, len(attrs))
+	for _, attr := range attrs {
+		if attr, keep := filterReservedAttr(attr); keep {
+			filtered = append(filtered, attr)
+		}
 	}
 	return filtered
 }
 
-func filterReservedAttr(attr slog.Attr) slog.Attr {
+func filterReservedAttr(attr slog.Attr) (slog.Attr, bool) {
 	if isReservedKey(attr.Key) {
-		return slog.Attr{}
+		return slog.Attr{}, false
 	}
 	attr.Value = attr.Value.Resolve()
 	if attr.Key == "" && attr.Value.Kind() == slog.KindGroup {
 		attr.Value = slog.GroupValue(filterReservedAttrs(attr.Value.Group())...)
 	}
-	return attr
+	return attr, true
 }

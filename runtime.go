@@ -134,13 +134,13 @@ func (r *Runtime) Close() error {
 }
 
 func (s *runtimeState) write(jsonLine []byte) error {
-	if s.memory != nil {
-		s.memory.append(jsonLine)
-	}
 	s.outputMu.Lock()
 	defer s.outputMu.Unlock()
 	if s.closed.Load() {
 		return ErrClosed
+	}
+	if s.memory != nil {
+		s.memory.append(jsonLine)
 	}
 
 	var failures []error

@@ -71,6 +71,9 @@ func autoColors(writer io.Writer) bool {
 // WriteRecord forwards JSON bytes unchanged, with empty input a no-op.
 // Text mode validates one JSON object before writing its formatted line.
 func (o *Output) WriteRecord(jsonContent []byte) error {
+	if len(jsonContent) == 0 {
+		return nil
+	}
 	data := jsonContent
 	if o.formatter != nil {
 		var err error

@@ -21,6 +21,8 @@ type MemoryConsumer interface {
 type memoryStore struct {
 	mu       sync.Mutex
 	records  [][]byte
+	head     int
+	count    int
 	bytes    int64
 	maxBytes int64
 }
@@ -38,14 +40,30 @@ func (s *memoryStore) append(jsonContent []byte) {
 		return
 	}
 
-	for len(s.records) > 0 && s.bytes+size > s.maxBytes {
-		oldestSize := int64(len(s.records[0]))
-		s.records[0] = nil
-		s.records = s.records[1:]
+	for s.count > 0 && s.bytes+size > s.maxBytes {
+		oldestSize := int64(len(s.records[s.head]))
+		s.records[s.head] = nil
+		s.head++
+		if s.head == len(s.records) {
+			s.head = 0
+		}
+		s.count--
 		s.bytes -= oldestSize
 	}
 
-	s.records = append(s.records, jsonContent)
+	if s.count == len(s.records) {
+		records := make([][]byte, max(8, 2*len(s.records)))
+		copied := copy(records, s.records[s.head:])
+		copy(records[copied:], s.records[:s.head])
+		s.records = records
+		s.head = 0
+	}
+	tail := s.head + s.count
+	if tail >= len(s.records) {
+		tail -= len(s.records)
+	}
+	s.records[tail] = jsonContent
+	s.count++
 	s.bytes += size
 }
 
@@ -56,35 +74,39 @@ func (s *memoryStore) Take(pageSize int) ([][]byte, error) {
 
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if len(s.records) == 0 {
+	if s.count == 0 {
 		return nil, nil
 	}
 
-	takeCount := len(s.records)
+	takeCount := s.count
 	if pageSize > 0 && pageSize < takeCount {
 		takeCount = pageSize
 	}
 
 	result := make([][]byte, takeCount)
-	var takeBytes int64
-	for index, jsonContent := range s.records[:takeCount] {
+	for index := range result {
+		jsonContent := s.records[s.head]
 		result[index] = bytes.Clone(jsonContent)
-		takeBytes += int64(len(jsonContent))
+		s.records[s.head] = nil
+		s.head++
+		if s.head == len(s.records) {
+			s.head = 0
+		}
+		s.bytes -= int64(len(jsonContent))
 	}
 
-	clear(s.records[:takeCount])
-	s.records = s.records[takeCount:]
-	if len(s.records) == 0 {
+	s.count -= takeCount
+	if s.count == 0 {
 		s.records = nil
+		s.head = 0
 	}
-	s.bytes -= takeBytes
 	return result, nil
 }
 
 func (s *memoryStore) Len() int {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	return len(s.records)
+	return s.count
 }
 
 func (s *memoryStore) Bytes() int64 {

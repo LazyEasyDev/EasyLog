@@ -55,7 +55,8 @@ type Options struct {
 	Directory       string
 	MaxSegmentBytes int64
 	MaxSegments     int
-	Permissions     fs.FileMode
+	// Permissions applies only to new segment files; zero defaults to 0644 before umask.
+	Permissions fs.FileMode
 }
 
 type segment struct {
@@ -122,6 +123,7 @@ func newWithClock(options Options, now func() time.Time) (*Output, error) {
 }
 
 // WriteRecord routes by JSON level and writes the complete line unchanged.
+// It may return a resume or previous-segment close error even if the record was written.
 func (o *Output) WriteRecord(jsonContent []byte) error {
 	lineBytes := int64(len(jsonContent))
 	o.mu.Lock()
@@ -157,7 +159,7 @@ func (o *Output) WriteRecord(jsonContent []byte) error {
 	written, writeErr := writeLine(store.active, jsonContent)
 	store.activeBytes += int64(written)
 	if writeErr == nil {
-		return nil
+		return prepareErr
 	}
 	closeErr := store.active.Close()
 	store.active = nil
@@ -334,7 +336,8 @@ func (o *Output) openSegment(store *levelStore, date time.Time) error {
 		var resumed bool
 		resumed, resumeErr = o.resumeSegment(store, date)
 		if resumed {
-			return errors.Join(resumeErr, o.cleanupClosedSegments(store))
+			_ = o.cleanupClosedSegments(store)
+			return resumeErr
 		}
 	}
 
@@ -346,7 +349,8 @@ func (o *Output) openSegment(store *levelStore, date time.Time) error {
 	store.activeSegment = activeSegment
 	store.activeBytes = 0
 	store.segments = append(store.segments, activeSegment)
-	return errors.Join(resumeErr, o.cleanupClosedSegments(store))
+	_ = o.cleanupClosedSegments(store)
+	return resumeErr
 }
 
 func (o *Output) rotate(store *levelStore, date time.Time) (bool, error) {
@@ -362,8 +366,8 @@ func (o *Output) rotate(store *levelStore, date time.Time) (bool, error) {
 
 	_ = previous.Sync()
 	closeErr := previous.Close()
-	cleanupErr := o.cleanupClosedSegments(store)
-	return true, errors.Join(closeErr, cleanupErr)
+	_ = o.cleanupClosedSegments(store)
+	return true, closeErr
 }
 
 func (o *Output) resumeSegment(store *levelStore, date time.Time) (bool, error) {
