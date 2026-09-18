@@ -20,7 +20,7 @@ const DefaultMemoryMaxBytes int64 = 8 * 1024 * 1024
 
 // Options configures an EasyLog runtime.
 type Options struct {
-	// Level defaults to INFO when nil or a nil *slog.LevelVar.
+	// Level defaults to WARN when nil or a nil *slog.LevelVar.
 	// Other typed-nil Levelers are not supported.
 	Level     slog.Leveler
 	AddSource bool
@@ -55,7 +55,7 @@ type Runtime struct {
 func New(options Options, outputs []Output) *Runtime {
 	level, isLevelVar := options.Level.(*slog.LevelVar)
 	if options.Level == nil || (isLevelVar && level == nil) {
-		options.Level = slog.LevelInfo
+		options.Level = slog.LevelWarn
 	}
 
 	state := &runtimeState{

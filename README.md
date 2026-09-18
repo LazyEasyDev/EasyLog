@@ -32,6 +32,7 @@ import (
 
 func main() {
 	if err := easylog.Init(easylog.InitOptions{
+		Runtime:  easylog.Options{Level: slog.LevelInfo},
 		Terminal: &easylog.TerminalOptions{Writer: os.Stdout},
 	}); err != nil {
 		panic(err)
@@ -54,6 +55,7 @@ WARN[0000] request retrying service=checkout attempt=2
 
 `Init` installs `slog.Default()` and routes standard `log.Print` calls through
 EasyLog too. This example writes only to stdout; it creates no files or memory store.
+It explicitly enables INFO logs; omitting `Level` uses WARN.
 
 ### Choose Your Setup
 
@@ -74,6 +76,7 @@ package main
 
 import (
 	"fmt"
+	"log/slog"
 	"os"
 
 	easylog "github.com/LazyEasyDev/EasyLog"
@@ -81,7 +84,7 @@ import (
 )
 
 func main() {
-	runtime := easylog.New(easylog.Options{}, []easylog.Output{
+	runtime := easylog.New(easylog.Options{Level: slog.LevelInfo}, []easylog.Output{
 		terminal.NewJSON(os.Stdout),
 	})
 	defer func() {
@@ -107,11 +110,17 @@ Pass `Options` to `New` or `InitWithOutputs`. For `Init`, use `InitOptions.Runti
 
 | Option | Default | Purpose |
 | --- | --- | --- |
-| `Level` | `slog.LevelInfo` | Fixed threshold or a dynamic `*slog.LevelVar` |
+| `Level` | `slog.LevelWarn` | Fixed threshold or a dynamic `*slog.LevelVar` |
 | `AddSource` | `false` | Include the logging call's function, file, and line when available |
 | `ReplaceAttr` | `nil` | Transform custom fields; built-in metadata is protected |
 | `Enrichers` | `nil` | Extract fields from each enabled call's context |
 | `MemoryMaxBytes` | `0` | Enable memory retention with a positive byte limit |
+
+When `Level` is unset or a nil `*slog.LevelVar`, only WARN and higher levels are
+emitted. Set `Level: slog.LevelInfo` to include INFO, or `Level: slog.LevelDebug`
+to include DEBUG. Standard `log.Print` calls normally use INFO, so they are also
+filtered by the WARN default unless you change the threshold or bridge level with
+`slog.SetLogLoggerLevel`.
 
 > [!NOTE]
 > Outputs and memory are opt-in. `InitOptions{}` and `New(Options{}, nil)` configure
@@ -155,17 +164,19 @@ runtime := easylog.New(easylog.Options{Level: &level}, []easylog.Output{
 })
 defer runtime.Close()
 
-runtime.Logger().Debug("hidden at the default INFO level")
+runtime.Logger().Debug("hidden at the LevelVar's initial INFO level")
 level.Set(slog.LevelDebug)
 runtime.Logger().Debug("debug enabled")
 ```
 
-For a fixed threshold, set `Level: slog.LevelDebug` directly.
+A supplied zero-value `slog.LevelVar` starts at INFO, as defined by Go; EasyLog
+does not overwrite it. For a fixed threshold, set `Level: slog.LevelDebug` directly.
 
 ### Source and Redaction
 
 ```go
 runtime := easylog.New(easylog.Options{
+	Level:     slog.LevelInfo,
 	AddSource: true,
 	ReplaceAttr: func(_ []string, attr slog.Attr) slog.Attr {
 		if attr.Key == "token" {
@@ -197,6 +208,7 @@ and `log/slog`:
 type requestIDKey struct{}
 
 runtime := easylog.New(easylog.Options{
+	Level: slog.LevelInfo,
 	Enrichers: []easylog.Enricher{
 		func(ctx context.Context) []slog.Attr {
 			requestID, ok := ctx.Value(requestIDKey{}).(string)
@@ -229,7 +241,7 @@ formatter := terminal.DefaultTextFormatter()
 formatter.TimestampFormat = "15:04:05"
 formatter.DisableColors = true
 
-runtime := easylog.New(easylog.Options{}, []easylog.Output{
+runtime := easylog.New(easylog.Options{Level: slog.LevelInfo}, []easylog.Output{
 	terminal.New(os.Stdout, &formatter),
 })
 defer runtime.Close()
@@ -256,7 +268,7 @@ control characters are escaped. DEBUG and ERROR display as DEBU and ERRO.
 Combine outputs to send the same event to text and JSON destinations:
 
 ```go
-if err := easylog.InitWithOutputs(easylog.Options{}, []easylog.Output{
+if err := easylog.InitWithOutputs(easylog.Options{Level: slog.LevelInfo}, []easylog.Output{
 	terminal.New(os.Stderr, nil),
 	terminal.NewJSON(os.Stdout),
 }); err != nil {
@@ -278,6 +290,7 @@ if err != nil {
 	panic(err)
 }
 if err := easylog.Init(easylog.InitOptions{
+	Runtime: easylog.Options{Level: slog.LevelInfo},
 	File: &easylog.FileOptions{
 		BaseDirectory:       directory,
 		MaxSegmentBytes:     8 * 1024 * 1024,
@@ -351,6 +364,7 @@ Memory retention is **disabled by default**. Enable it with a positive byte limi
 
 ```go
 runtime := easylog.New(easylog.Options{
+	Level:          slog.LevelInfo,
 	MemoryMaxBytes: easylog.DefaultMemoryMaxBytes,
 }, nil)
 defer runtime.Close()
