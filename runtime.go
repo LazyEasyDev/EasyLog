@@ -22,8 +22,9 @@ const DefaultMemoryMaxBytes int64 = 8 * 1024 * 1024
 type Options struct {
 	// Level defaults to INFO when nil or a nil *slog.LevelVar.
 	// Other typed-nil Levelers are not supported.
-	Level       slog.Leveler
-	AddSource   bool
+	Level     slog.Leveler
+	AddSource bool
+	// ReplaceAttr transforms custom attributes only; built-in metadata is protected.
 	ReplaceAttr func(groups []string, attr slog.Attr) slog.Attr
 	// MemoryMaxBytes enables bounded memory retention when positive.
 	MemoryMaxBytes int64
@@ -69,7 +70,8 @@ func New(options Options, outputs []Output) *Runtime {
 	}
 
 	runtime := &Runtime{state: state}
-	runtime.root = &handler{state: state, jsonHandler: newJSONHandler(state)}
+	writer := &jsonWriter{}
+	runtime.root = &handler{state: state, jsonHandler: newJSONHandler(writer), jsonWriter: writer}
 	return runtime
 }
 
@@ -133,7 +135,7 @@ func (r *Runtime) Close() error {
 	return errors.Join(failures...)
 }
 
-func (s *runtimeState) write(jsonLine []byte) error {
+func (s *runtimeState) write(record slog.Record, jsonLine []byte) error {
 	s.outputMu.Lock()
 	defer s.outputMu.Unlock()
 	if s.closed.Load() {
@@ -148,7 +150,7 @@ func (s *runtimeState) write(jsonLine []byte) error {
 		if output == nil {
 			continue
 		}
-		if err := output.WriteRecord(jsonLine); err != nil {
+		if err := output.WriteRecord(record, jsonLine); err != nil {
 			failures = append(failures, fmt.Errorf("output %d write: %w", index, err))
 		}
 	}

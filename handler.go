@@ -3,12 +3,15 @@ package easylog
 import (
 	"context"
 	"log/slog"
+	"slices"
 )
 
 type handler struct {
 	state       *runtimeState
 	jsonHandler slog.Handler
-	grouped     bool
+	jsonWriter  *jsonWriter
+	groups      []string
+	bound       [][]slog.Attr
 	ignoreAttrs bool
 }
 
@@ -31,7 +34,12 @@ func (h *handler) Handle(ctx context.Context, source slog.Record) error {
 		}
 	}
 
-	return h.encode(ctx, source)
+	record := h.prepareRecord(source)
+	jsonLine, err := h.encodeJSON(ctx, record)
+	if err != nil {
+		return err
+	}
+	return h.state.write(record, jsonLine)
 }
 
 func (h *handler) WithAttrs(attrs []slog.Attr) slog.Handler {
@@ -41,11 +49,15 @@ func (h *handler) WithAttrs(attrs []slog.Attr) slog.Handler {
 	if h.ignoreAttrs {
 		return h
 	}
-	if !h.grouped {
-		attrs = filterReservedAttrs(attrs)
+	attrs = h.prepareAttrs(attrs, h.groups)
+	if len(attrs) == 0 {
+		return h
 	}
 	child := *h
-	child.jsonHandler = h.jsonHandler.WithAttrs(attrs)
+	child.bound = make([][]slog.Attr, len(h.groups)+1)
+	copy(child.bound, h.bound)
+	depth := len(h.groups)
+	child.bound[depth] = append(slices.Clone(child.bound[depth]), attrs...)
 	return &child
 }
 
@@ -57,12 +69,11 @@ func (h *handler) WithGroup(name string) slog.Handler {
 		return h
 	}
 	child := *h
-	if !h.grouped && isReservedKey(name) {
+	if len(h.groups) == 0 && isReservedKey(name) {
 		child.ignoreAttrs = true
 		return &child
 	}
-	child.jsonHandler = h.jsonHandler.WithGroup(name)
-	child.grouped = true
+	child.groups = append(slices.Clone(h.groups), validString(name))
 	return &child
 }
 
@@ -73,25 +84,4 @@ func isReservedKey(key string) bool {
 	default:
 		return false
 	}
-}
-
-func filterReservedAttrs(attrs []slog.Attr) []slog.Attr {
-	filtered := make([]slog.Attr, 0, len(attrs))
-	for _, attr := range attrs {
-		if attr, keep := filterReservedAttr(attr); keep {
-			filtered = append(filtered, attr)
-		}
-	}
-	return filtered
-}
-
-func filterReservedAttr(attr slog.Attr) (slog.Attr, bool) {
-	if isReservedKey(attr.Key) {
-		return slog.Attr{}, false
-	}
-	attr.Value = attr.Value.Resolve()
-	if attr.Key == "" && attr.Value.Kind() == slog.KindGroup {
-		attr.Value = slog.GroupValue(filterReservedAttrs(attr.Value.Group())...)
-	}
-	return attr, true
 }

@@ -2,7 +2,9 @@
 package terminal
 
 import (
+	"bytes"
 	"io"
+	"log/slog"
 	"os"
 	"sync"
 	"time"
@@ -14,6 +16,7 @@ type Output struct {
 	writer    io.Writer
 	formatter *TextFormatter
 	startedAt time.Time
+	buffer    bytes.Buffer
 }
 
 func GetDefaultTextFormatter() TextFormatter {
@@ -68,22 +71,21 @@ func autoColors(writer io.Writer) bool {
 	return err == nil && supported
 }
 
-// WriteRecord forwards JSON bytes unchanged, with empty input a no-op.
-// Text mode validates one JSON object before writing its formatted line.
-func (o *Output) WriteRecord(jsonContent []byte) error {
+// WriteRecord renders a complete prepared record in text mode or forwards JSON unchanged.
+func (o *Output) WriteRecord(record slog.Record, jsonContent []byte) error {
 	if len(jsonContent) == 0 {
 		return nil
 	}
-	data := jsonContent
-	if o.formatter != nil {
-		var err error
-		data, err = o.formatter.format(jsonContent, time.Since(o.startedAt))
-		if err != nil {
-			return err
-		}
-	}
 	o.mu.Lock()
 	defer o.mu.Unlock()
+	data := jsonContent
+	if o.formatter != nil {
+		o.buffer.Reset()
+		if err := o.formatter.formatRecord(&o.buffer, record, time.Since(o.startedAt)); err != nil {
+			return err
+		}
+		data = o.buffer.Bytes()
+	}
 	return writeAll(o.writer, data)
 }
 

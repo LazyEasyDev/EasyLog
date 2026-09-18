@@ -24,7 +24,7 @@ type order struct {
 
 func main() {
 
-	selected := flag.String("example", "all", "Example: all, init, new, context, memory, outputs, format")
+	selected := flag.String("example", "all", "Example: all, init, new, context, memory, outputs")
 	logDirectory := flag.String("log-dir", "", "Optional base directory for the init example's logs subdirectory")
 	flag.Parse()
 	if err := run(*selected, *logDirectory); err != nil {
@@ -43,7 +43,6 @@ func run(selected, logDirectory string) error {
 		{"context", contextLogger},
 		{"memory", memoryConsumer},
 		{"outputs", multipleOutputs},
-		{"format", standaloneFormatter},
 	}
 	matched := false
 	for _, example := range examples {
@@ -178,19 +177,5 @@ func multipleOutputs() (err error) {
 
 	slog.Info("inventory updated", "sku", "item-42", "quantity", 12)
 	_, err = os.Stdout.Write(jsonOutput.Bytes())
-	return err
-}
-
-func standaloneFormatter() error {
-	formatter := terminal.TextFormatter{
-		DisableColors:    true,
-		DisableTimestamp: true,
-		ShowLevel:        true,
-	}
-	line, err := formatter.Format([]byte(`{"level":"WARN","msg":"cache miss","key":"item:42"}`))
-	if err != nil {
-		return err
-	}
-	_, err = os.Stdout.Write(line)
 	return err
 }

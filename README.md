@@ -205,9 +205,11 @@ options := easylog.Options{
 }
 ```
 
-`ReplaceAttr` can rename, transform, or remove fields; return `slog.Attr{}` to remove
-one. It runs at binding for bound fields and per call for call-site fields and
-metadata. The example redacts slog fields named `token`, including inside named
+`ReplaceAttr` can rename, transform, or remove custom fields; return `slog.Attr{}` to
+remove one. It runs at binding for bound fields and per call for call-site fields.
+Built-in `time`, `level`, `msg`, and `source` metadata never reaches the callback
+and cannot be renamed, removed, or changed by it. The example redacts slog fields
+named `token`, including inside named
 slog groups. It does not inspect members of arbitrary structs or maps; redact those
 values before logging them.
 
@@ -215,7 +217,9 @@ values before logging them.
 
 Avoid logging through the same runtime from `ReplaceAttr`, `Enrichers`, or
 `LogValuer.LogValue` callbacks. Recursive logging can reenter those callbacks
-indefinitely. If the original call came through standard `log.Print`, calling
+indefinitely. Attribute resolution, replacement, and custom JSON marshaling run
+during preparation, outside the JSON capture and output locks.
+If the original call came through standard `log.Print`, calling
 `log.Print` again inside a callback deadlocks on the standard logger's mutex,
 before EasyLog receives the nested call. This also affects the standard slog
 bridge; EasyLog cannot intercept the blocked call to reject it.
@@ -254,7 +258,7 @@ runtime.Logger().Info("ready", "service", "api")
 | Text Setting | Behavior |
 | --- | --- |
 | `TimestampFormat: ""` | Elapsed seconds since output creation; the default |
-| `TimestampFormat: "15:04:05"` | Format JSON time using a Go layout |
+| `TimestampFormat: "15:04:05"` | Format record time using a Go layout |
 | `DisableTimestamp: true` | Hide timestamps |
 | `ShowLevel: true` | Display the level; does not change filtering |
 | `DisableColors: true` | Disable colors, including forced colors |
@@ -325,28 +329,6 @@ Any `io.Writer`, such as a buffer or network writer, can receive JSON through
 `terminal.NewJSON(writer)`. Implement [Output](#custom-outputs) to manage your own
 destination's lifecycle.
 
-### Standalone Formatting
-
-Format existing JSON without a runtime or slog record:
-
-```go
-formatter := terminal.TextFormatter{
-	DisableColors:    true,
-	DisableTimestamp: true,
-	ShowLevel:        true,
-}
-line, err := formatter.Format([]byte(`{"level":"WARN","msg":"cache miss","key":"item:42"}`))
-if err != nil {
-	panic(err)
-}
-if _, err := os.Stdout.Write(line); err != nil {
-	panic(err)
-}
-```
-
-Output: `WARN cache miss key=item:42`, followed by a newline. Standalone formatting
-uses zero elapsed time and no automatic colors.
-
 ## Optional Memory
 
 `Options{}` creates **no memory store** and `Consumer()` returns nil. Set a positive
@@ -398,7 +380,7 @@ Use `Options` with `New` or `InitWithOutputs`, or through `InitOptions.Runtime`.
 | --- | --- | --- |
 | `Level` | INFO | Fixed threshold or a `*slog.LevelVar` |
 | `AddSource` | `false` | Include source function, file, and line |
-| `ReplaceAttr` | nil | Customize resolved JSON attributes |
+| `ReplaceAttr` | nil | Customize resolved custom attributes; built-in metadata is protected |
 | `Enrichers` | nil | Extract fields from each enabled call's context |
 | `MemoryMaxBytes` | `0`, disabled | Positive values enable bounded retention |
 
@@ -429,33 +411,60 @@ Terminal `Sync`/`Close` are no-ops: flush and close caller-owned writers yoursel
 
 ### Encoding
 
-Each enabled call is encoded once by a standard `slog.JSONHandler`. Derived handlers
-reuse fields prepared by `With` and preserve `WithGroup` nesting. Direct fields and
-enrichers are processed per call, never once per destination.
+Each enabled call builds a complete `slog.Record` and is encoded once by a standard
+`slog.JSONHandler`. EasyLog retains fields prepared by `With` and combines them
+with the call's fields using the nesting from `WithGroup`. Bound values are resolved,
+replaced, and snapshotted at binding; direct fields and enrichers are prepared per
+call, never once per destination. Duplicate keys and attribute order are preserved.
 
-The handler's writer copies the completed JSON line before passing it to the runtime.
-Optional memory and all outputs receive the same owned bytes. Text output formats
-that JSON without evaluating values again. Logging is synchronous and output writes
-are serialized. Callbacks may run concurrently; synchronize their mutable state.
+Preparation resolves `LogValuer` values and runs custom replacement before output.
+Time-valued attributes become formatted strings; arbitrary values are snapshotted
+using JSON encoding (or an error's string representation). JSON strings become
+string attributes; other encoded values become owned `json.RawMessage` attributes.
+Custom marshalers therefore run once, not separately for JSON and text. Treat these
+prepared values as immutable.
+
+The handler's capture writer copies the completed JSON line without delivering it.
+After encoding returns, the handler passes the prepared `slog.Record` and JSON bytes
+together to the runtime. Capture is serialized across a runtime's derived handlers,
+and its lock is released before output delivery. Optional memory retains JSON only;
+all outputs receive the same complete record and owned JSON bytes. Built-in text
+output formats the record directly without decoding the JSON or evaluating user
+values again. It reuses a buffer under the terminal's write lock. Logging is
+synchronous and output writes are serialized. Preparation callbacks may run
+concurrently; synchronize their mutable state.
 
 Top-level user keys/groups `time`, `level`, `msg`, and `source` are reserved and
 silently filtered, including replacement collisions and inlined unnamed groups.
 User fields with reserved root keys are omitted before `ReplaceAttr`, without
 resolving their values. For example, `logger.Info("hello", "msg", "override")` behaves like
 `logger.Info("hello")`.
-These names are allowed inside named groups. Replacement may change built-in
-metadata. Original slog severity controls filtering; final JSON controls display
-and file routing.
+These names are allowed inside named groups. Built-in metadata is protected from
+replacement. Record severity controls filtering and display; file routing reads
+the corresponding JSON level.
 
 ### Custom Outputs
 
 ```go
 type Output interface {
-	WriteRecord(jsonContent []byte) error
+	WriteRecord(record slog.Record, jsonContent []byte) error
 	Sync() error
 	Close() error
 }
 ```
+
+The record is complete: it contains enriched, filtered, resolved and replaced
+custom attributes, including bound fields and group nesting. `Time`, `Level`, and
+`Message` contain the protected metadata. When `AddSource` is enabled, a prepared
+`source` group holds its function, file, and line; formatters must not infer source
+visibility from `PC` alone. A plain `slog.JSONHandler` with default options can
+encode this record without further binding, replacement, or source generation.
+Treat attributes, nested group slices, and raw JSON values as read-only; call
+`record.Clone()` before adding attributes and deep-copy nested data before changing
+it. Outputs may retain the record and JSON bytes without rerunning callbacks.
+
+`terminal.TextFormatter.FormatRecord(record)` formats a prepared record directly.
+It uses zero elapsed time and no automatic colors.
 
 Outputs receive a complete JSON object with one trailing newline. They may retain
 the slice but must not modify its backing array, including spare capacity; copy
@@ -496,19 +505,20 @@ this can deadlock. Coordinate ownership when sharing outputs across runtimes.
 
 ### Text Details
 
-Canonical string `msg` becomes the message; other fields become `key=value`, with
-objects and arrays kept as JSON. Renamed metadata is ordinary data. Control
-characters are escaped; DEBUG/ERROR prefixes shorten to DEBU/ERRO.
+Runtime text output reads the prepared record's message, time, level, and attributes
+directly. Fields become `key=value`, with groups, objects, and arrays kept as JSON.
+Control characters are escaped; DEBUG/ERROR prefixes shorten to DEBU/ERRO.
 
-Final JSON `level` colors the prefix and field names: DEBUG/DEBU gray, INFO cyan,
-WARN/WARNING yellow, ERROR/ERRO red. Unknown or missing levels are uncolored.
-Messages, timestamps, and values keep the default color. Elapsed time is independent
-of JSON time; a Go timestamp layout does not synthesize a missing JSON timestamp.
+The record's level colors the prefix and field names: DEBUG gray, INFO cyan, WARN
+yellow, ERROR red. Other slog levels are uncolored. Messages, timestamps, and
+values keep the default color. Elapsed time is independent of the record's time;
+a Go timestamp layout does not synthesize a zero timestamp. The reusable terminal
+buffer retains its capacity after a large line.
 
 ### Lifecycle Details
 
 Close disables new calls, waits for active output I/O, and closes every output.
-Active enrichers and encoding are not awaited. Under the output lock, calls check
+Active preparation and encoding are not awaited. Under the output lock, calls check
 for closure before retaining records or writing outputs. Once the first Close
 finishes, no more records can enter memory; a captured consumer remains drainable.
 Retention precedes that record's output I/O, including when destinations fail,

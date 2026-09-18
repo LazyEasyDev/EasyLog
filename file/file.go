@@ -124,7 +124,7 @@ func newWithClock(options Options, now func() time.Time) (*Output, error) {
 
 // WriteRecord routes by JSON level and writes the complete line unchanged.
 // It may return a resume or previous-segment close error even if the record was written.
-func (o *Output) WriteRecord(jsonContent []byte) error {
+func (o *Output) WriteRecord(_ slog.Record, jsonContent []byte) error {
 	lineBytes := int64(len(jsonContent))
 	o.mu.Lock()
 	defer o.mu.Unlock()
