@@ -111,6 +111,7 @@ func independentLogger() (err error) {
 	logger.Debug("hidden at the default INFO level")
 	level.Set(slog.LevelDebug)
 	logger.Debug("debug enabled at runtime", "queue_depth", 2)
+
 	return nil
 }
 
