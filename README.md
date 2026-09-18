@@ -1,29 +1,29 @@
 # EasyLog
 
-Use Go's `log/slog` with readable terminal logs, rotating JSON files, custom outputs,
-and optional in-memory retention. Use `Init` for a global logger or `New` for an
-independent one. **Memory retention is off by default.**
+Readable terminal logs, rotating JSON files, and optional in-memory retention,
+built on Go's standard `log/slog`. Use ordinary slog calls with one or more outputs.
 
-Requires Go 1.25 or newer.
+**Go 1.25+** · **[MIT license](LICENSE)**
+
+[Quick start](#quick-start) · [Configuration](#configuration) ·
+[Logging](#logging) · [Outputs](#outputs) · [Memory](#memory) ·
+[Shutdown](#shutdown) · [Safety](#concurrency-and-callbacks)
+
+## Install
 
 ```sh
 go get github.com/LazyEasyDev/EasyLog
 ```
 
-[Getting started](#getting-started) | [Logging styles](#logging-styles) |
-[Outputs](#outputs) | [Memory](#optional-memory) | [Options](#options) |
-[Design and contracts](#design-and-contracts)
+## Quick Start
 
-## Getting Started
-
-### Global Logger: Init
-
-Initialize once at startup, then use standard `slog` calls throughout your app.
+Initialize the global logger once, then use `slog` throughout your application:
 
 ```go
 package main
 
 import (
+	"fmt"
 	"log/slog"
 	"os"
 
@@ -36,7 +36,11 @@ func main() {
 	}); err != nil {
 		panic(err)
 	}
-	defer easylog.Close()
+	defer func() {
+		if err := easylog.Close(); err != nil {
+			fmt.Fprintln(os.Stderr, err)
+		}
+	}()
 
 	slog.Info("application started", "address", ":8080")
 	slog.With("service", "checkout").Warn("request retrying", "attempt", 2)
@@ -48,18 +52,28 @@ INFO[0000] application started address=:8080
 WARN[0000] request retrying service=checkout attempt=2
 ```
 
-`Init` sets `slog.Default()` and also routes standard `log.Print` calls through
-EasyLog. This example writes text to stdout without file output or memory retention.
+`Init` installs `slog.Default()` and routes standard `log.Print` calls through
+EasyLog too. This example writes only to stdout; it creates no files or memory store.
 
-### Independent Logger: New
+### Choose Your Setup
 
-Use `New` to pass a logger to a component, keep separate configurations, or avoid
-changing the process-wide logger.
+| Entry point | Best for | Shutdown |
+| --- | --- | --- |
+| `Init(InitOptions)` | Global logger with built-in outputs | `easylog.Close()` |
+| `New(Options, []Output)` | Independent logger passed to your components | `runtime.Close()` |
+| `InitWithOutputs(Options, []Output)` | Global logger with an explicit output list | `easylog.Close()` |
+
+Use `Sync()` before `Close()` when you need to explicitly sync every output.
+See [shutdown](#shutdown) for output ownership and error handling.
+
+<details>
+<summary><strong>Complete example: independent JSON logger</strong></summary>
 
 ```go
 package main
 
 import (
+	"fmt"
 	"os"
 
 	easylog "github.com/LazyEasyDev/EasyLog"
@@ -70,54 +84,45 @@ func main() {
 	runtime := easylog.New(easylog.Options{}, []easylog.Output{
 		terminal.NewJSON(os.Stdout),
 	})
-	defer runtime.Close()
+	defer func() {
+		if err := runtime.Close(); err != nil {
+			fmt.Fprintln(os.Stderr, err)
+		}
+	}()
 
 	logger := runtime.Logger().With("service", "orders")
 	logger.Info("order received", "order_id", "order-42")
 }
 ```
 
-This writes one JSON object per line, including `time`, `level`, `msg`, and your
-fields. `runtime.Logger()` is a normal `*slog.Logger`; `runtime.Handler()` exposes
-its `slog.Handler`. `New` leaves `slog.Default()` unchanged.
+`New` leaves the global logger unchanged. `runtime.Logger()` returns a standard
+`*slog.Logger`; `runtime.Handler()` exposes its handler. JSON output is NDJSON:
+one JSON object per line, including `time`, `level`, `msg`, and your fields.
 
-| Entry Point | Use When | Lifecycle |
+</details>
+
+## Configuration
+
+Pass `Options` to `New` or `InitWithOutputs`. For `Init`, use `InitOptions.Runtime`.
+
+| Option | Default | Purpose |
 | --- | --- | --- |
-| `Init(InitOptions)` | Global logger with built-in terminal and/or file output | `easylog.Sync()`, `easylog.Close()` |
-| `New(Options, []Output)` | Independent logger with explicit outputs | `runtime.Sync()`, `runtime.Close()` |
-| `InitWithOutputs(Options, []Output)` | Global logger with explicit outputs | `easylog.Sync()`, `easylog.Close()` |
+| `Level` | `slog.LevelInfo` | Fixed threshold or a dynamic `*slog.LevelVar` |
+| `AddSource` | `false` | Include the logging call's function, file, and line when available |
+| `ReplaceAttr` | `nil` | Transform custom fields; built-in metadata is protected |
+| `Enrichers` | `nil` | Extract fields from each enabled call's context |
+| `MemoryMaxBytes` | `0` | Enable memory retention with a positive byte limit |
 
-The short examples defer `Close`. See [Shutdown](#shutdown) for durability and
-error handling, and [main/main.go](main/main.go) for complete examples.
+> [!NOTE]
+> Outputs and memory are opt-in. `InitOptions{}` and `New(Options{}, nil)` configure
+> neither. A nil `InitOptions.File` or `InitOptions.Terminal` disables that output.
 
-### Run the Examples
+The recipes below are function-body snippets. Import the packages they use, and
+reuse the independent example's `runtime` where one is not created. Short snippets
+defer `Close` for brevity; use the error handling shown in [shutdown](#shutdown).
+Complete runnable recipes are in [main/main.go](main/main.go).
 
-From a checkout of this repository:
-
-```sh
-go run ./main
-go run ./main -example new
-go run ./main -example init -log-dir /tmp/easylog-demo
-```
-
-No files are created unless `-log-dir` is supplied. The `init` example then writes
-under `<log-dir>/logs`.
-
-| Example | Demonstrates |
-| --- | --- |
-| `init` | Global `slog`, standard `log`, all levels, optional rotating files |
-| `new` | Independent JSON logger, structs, groups, typed attributes, source, redaction, dynamic level |
-| `context` | Per-request fields through context enrichers |
-| `memory` | Explicit memory retention, queue size, paging, draining |
-| `outputs` | `InitWithOutputs`, text and JSON from the same event |
-| `format` | JSON-to-text formatting without a logger |
-| `all` | Every example in sequence; the default |
-
-## Logging Styles
-
-The recipes below use the imports and runtime shown above. Add standard packages
-such as `context` and `log/slog` where used; complete code is in
-[main/main.go](main/main.go).
+## Logging
 
 ### Fields and Groups
 
@@ -125,7 +130,7 @@ such as `context` and `log/slog` where used; complete code is in
 logger := runtime.Logger()
 logger.Info("order received", "order_id", "order-42", "items", 3)
 
-service := logger.With("service", "checkout", "version", "1.0")
+service := logger.With("service", "checkout")
 service.Info("ready", "address", ":8080")
 
 payment := service.WithGroup("payment").With("provider", "sandbox")
@@ -133,16 +138,13 @@ payment.Info("authorized", "amount", 42.50)
 
 logger.LogAttrs(context.Background(), slog.LevelInfo, "request completed",
 	slog.Group("http", slog.String("method", "POST"), slog.Int("status", 201)),
-	slog.Int("attempt", 1),
 )
 ```
 
-Use key/value pairs for convenience, `LogAttrs` for explicit types, and groups to
-nest related fields. Structs and other JSON-compatible values can be field values.
-
-**Bind stable fields with `With`; pass changing values on each log call.** Bound
-fields, including `LogValuer` values, are prepared at `With` time. Later mutations
-do not change that child's stored JSON, matching the standard JSON handler.
+Bind stable fields with `With(...)`; pass changing fields with each call.
+Bound values are resolved and snapshotted once, so later mutations do not change
+that logger's fields. Their JSON encoding is cached with source both on and off.
+Structs, maps, and other JSON-compatible values can be used as field values.
 
 ### Dynamic Levels
 
@@ -153,18 +155,43 @@ runtime := easylog.New(easylog.Options{Level: &level}, []easylog.Output{
 })
 defer runtime.Close()
 
-logger := runtime.Logger()
-logger.Debug("hidden at the default INFO level")
+runtime.Logger().Debug("hidden at the default INFO level")
 level.Set(slog.LevelDebug)
-logger.Debug("debug enabled")
+runtime.Logger().Debug("debug enabled")
 ```
 
-For a fixed threshold, use `Level: slog.LevelDebug`. With `Init`, put these settings
-in `InitOptions.Runtime`.
+For a fixed threshold, set `Level: slog.LevelDebug` directly.
+
+### Source and Redaction
+
+```go
+runtime := easylog.New(easylog.Options{
+	AddSource: true,
+	ReplaceAttr: func(_ []string, attr slog.Attr) slog.Attr {
+		if attr.Key == "token" {
+			return slog.String("token", "[REDACTED]")
+		}
+		return attr
+	},
+}, []easylog.Output{terminal.NewJSON(os.Stdout)})
+defer runtime.Close()
+
+runtime.Logger().Info("authorized", "token", "demo-token")
+```
+
+`ReplaceAttr` can rename, transform, or remove custom fields. Return `slog.Attr{}`
+to remove a field. It runs once at binding for `With` fields and per call for new
+fields, including children of slog groups. It does not inspect fields inside
+arbitrary maps or structs; redact those values before logging.
+
+**Top-level `time`, `level`, `msg`, and `source` are reserved.** User fields or
+groups with those names are omitted, including replacement collisions. Built-in
+metadata never reaches `ReplaceAttr`. These names are allowed inside named groups.
 
 ### Request Context
 
-Enrichers extract fields from each enabled call's context. Use a private key type:
+Use `Enrichers` to attach request-scoped fields. This example also imports `context`
+and `log/slog`:
 
 ```go
 type requestIDKey struct{}
@@ -186,65 +213,19 @@ ctx := context.WithValue(context.Background(), requestIDKey{}, "req-123")
 runtime.Logger().InfoContext(ctx, "request accepted", "path", "/orders")
 ```
 
-`LogAttrs(ctx, ...)` also passes context to enrichers. Plain `Info(...)` does not
-carry your request context.
-
-### Field Customization
-
-Pass these options to `New` or `InitWithOutputs`, or to `InitOptions.Runtime`:
-
-```go
-options := easylog.Options{
-	AddSource: true,
-	ReplaceAttr: func(_ []string, attr slog.Attr) slog.Attr {
-		if attr.Key == "token" {
-			return slog.String(attr.Key, "[REDACTED]")
-		}
-		return attr
-	},
-}
-```
-
-`ReplaceAttr` can rename, transform, or remove custom fields; return `slog.Attr{}` to
-remove one. It runs at binding for bound fields and per call for call-site fields.
-Built-in `time`, `level`, `msg`, and `source` metadata never reaches the callback
-and cannot be renamed, removed, or changed by it. The example redacts slog fields
-named `token`, including inside named
-slog groups. It does not inspect members of arbitrary structs or maps; redact those
-values before logging them.
-
-### Callback Safety
-
-Avoid logging through the same runtime from `ReplaceAttr`, `Enrichers`, or
-`LogValuer.LogValue` callbacks. Recursive logging can reenter those callbacks
-indefinitely. Attribute resolution, replacement, and custom JSON marshaling run
-during preparation, outside the JSON capture and output locks.
-If the original call came through standard `log.Print`, calling
-`log.Print` again inside a callback deadlocks on the standard logger's mutex,
-before EasyLog receives the nested call. This also affects the standard slog
-bridge; EasyLog cannot intercept the blocked call to reject it.
-
-For callback diagnostics, create a separate logger once, outside callbacks, using
-the standard `log` and `os` packages:
-
-```go
-diagnostic := log.New(os.Stderr, "easylog diagnostic: ", log.LstdFlags)
-```
-
-Inside a callback, use `diagnostic.Print("processing log attributes")` instead.
-Keep its destination independent of EasyLog; writing directly to stderr bypasses
-the runtime and uses a separate logger mutex. Do not redirect it back through
-the same logging pipeline.
+Use `InfoContext` or `LogAttrs(ctx, ...)` to pass request context. Plain `Info(...)`
+uses a background context. Enrichers are skipped for disabled log calls.
 
 ## Outputs
 
-### Terminal Text and JSON
+### Terminal Text
 
-Import `github.com/LazyEasyDev/EasyLog/terminal`. Use `terminal.New(writer, nil)` for
-default text or `terminal.NewJSON(writer)` for raw NDJSON. To customize text:
+Import `github.com/LazyEasyDev/EasyLog/terminal`. `terminal.New(writer, nil)` uses
+elapsed timestamps, visible levels, and automatic colors. Start with the default
+formatter when changing only a few settings:
 
 ```go
-formatter := terminal.GetDefaultTextFormatter()
+formatter := terminal.DefaultTextFormatter()
 formatter.TimestampFormat = "15:04:05"
 formatter.DisableColors = true
 
@@ -255,64 +236,24 @@ defer runtime.Close()
 runtime.Logger().Info("ready", "service", "api")
 ```
 
-| Text Setting | Behavior |
+| Setting | Effect |
 | --- | --- |
-| `TimestampFormat: ""` | Elapsed seconds since output creation; the default |
-| `TimestampFormat: "15:04:05"` | Format record time using a Go layout |
+| `TimestampFormat: ""` | Elapsed seconds since output creation |
+| `TimestampFormat: "15:04:05"` | Record time formatted with a Go time layout |
 | `DisableTimestamp: true` | Hide timestamps |
-| `ShowLevel: true` | Display the level; does not change filtering |
-| `DisableColors: true` | Disable colors, including forced colors |
-| `ForceColors: true` | Force colors for an ANSI-capable destination |
+| `ShowLevel: true` | Show the level; does not change filtering |
+| `DisableColors: true` | Disable all colors, even forced colors |
+| `ForceColors: true` | Force ANSI colors without terminal detection |
 
-Defaults include the level and automatic colors, respecting `NO_COLOR`, `TERM=dumb`,
-and terminal detection. Supplied formatters are copied; their zero value hides the
-level. Direct terminal constructors use stderr for nil writers. In contrast, `Init`
-disables terminal output when `Terminal.Writer` is nil.
+Automatic colors respect `NO_COLOR`, `TERM=dumb`, and terminal capabilities.
+Formatters are copied; a zero-value formatter hides the level. The level and field
+names are colored, not the message or values. Groups and objects remain JSON;
+control characters are escaped. DEBUG and ERROR display as DEBU and ERRO.
 
-### Rotating Files
+### JSON and Multiple Outputs
 
-Set `File` alongside `Terminal` to send each event to both destinations:
-
-```go
-directory, err := os.Getwd()
-if err != nil {
-	panic(err)
-}
-if err := easylog.Init(easylog.InitOptions{
-	File: &easylog.FileOptions{
-		Directory:       directory,
-		MaxSegmentBytes: 8 * 1024 * 1024,
-		MaxSegments:     7,
-	},
-	Terminal: &easylog.TerminalOptions{Writer: os.Stdout},
-}); err != nil {
-	panic(err)
-}
-defer easylog.Close()
-slog.Info("written to terminal and file")
-if err := easylog.Sync(); err != nil {
-	panic(err)
-}
-```
-
-`Directory` must be absolute. Files live under its `logs` subdirectory, with names
-like `info_20260917_0.jsonl`. Defaults: 8 MiB segments, seven segments per level
-(including active), and permissions `0644`. Rotation uses UTC dates and size;
-retention is best effort, not a hard disk quota.
-
-Missing directories are created with `0755`, subject to the process's `umask`.
-Existing directories are reused without validating or changing their permissions
-or ownership. New segment files use `Permissions` (`0644` by default), subject to
-`umask`; resumed files keep their existing permissions.
-
-For `New`, import `github.com/LazyEasyDev/EasyLog/file`, call
-`file.New(file.Options{Directory: directory})`, check its error, and include the
-result in the output slice. Use one output/process per managed directory.
-
-### Multiple Outputs
-
-`New` and `InitWithOutputs` accept the same output list. This installs a global
-logger with text on stderr and JSON on stdout:
+`terminal.NewJSON(writer)` sends raw NDJSON to any `io.Writer`, not just a terminal.
+Combine outputs to send the same event to text and JSON destinations:
 
 ```go
 if err := easylog.InitWithOutputs(easylog.Options{}, []easylog.Output{
@@ -322,18 +263,91 @@ if err := easylog.InitWithOutputs(easylog.Options{}, []easylog.Output{
 	panic(err)
 }
 defer easylog.Close()
-slog.Info("inventory updated", "sku", "item-42")
+slog.Info("inventory updated", "sku", "item-42", "quantity", 12)
 ```
 
-Any `io.Writer`, such as a buffer or network writer, can receive JSON through
-`terminal.NewJSON(writer)`. Implement [Output](#custom-outputs) to manage your own
-destination's lifecycle.
+Terminal outputs do not flush or close caller-owned writers. Direct terminal
+constructors use stderr for a nil writer; `Init` instead disables terminal output
+when `Terminal.Writer` is nil.
 
-## Optional Memory
+### Rotating Files
 
-`Options{}` creates **no memory store** and `Consumer()` returns nil. Set a positive
-`MemoryMaxBytes` to enable retention. `DefaultMemoryMaxBytes` is a recommended 8 MiB
-limit, not an automatically applied default.
+```go
+directory, err := os.Getwd()
+if err != nil {
+	panic(err)
+}
+if err := easylog.Init(easylog.InitOptions{
+	File: &easylog.FileOptions{
+		BaseDirectory:       directory,
+		MaxSegmentBytes:     8 * 1024 * 1024,
+		MaxSegmentsPerLevel: 7,
+		Permissions:         0o600,
+	},
+	Terminal: &easylog.TerminalOptions{Writer: os.Stdout},
+}); err != nil {
+	panic(err)
+}
+defer func() {
+	if err := easylog.Close(); err != nil {
+		fmt.Fprintln(os.Stderr, err)
+	}
+}()
+slog.Info("written to terminal and file")
+```
+
+| File option | Default | Meaning |
+| --- | --- | --- |
+| `BaseDirectory` | Required | Absolute parent directory; files go into its `logs` subdirectory |
+| `MaxSegmentBytes` | 8 MiB | Rotate before the next record exceeds the segment size |
+| `MaxSegmentsPerLevel` | 7 | Retain up to this many segments per severity bucket, including active; best effort |
+| `Permissions` | `0o644` | New-file permissions, before `umask`; must include owner read/write |
+
+Files are named `debug_YYYYMMDD_N.jsonl`, `info_YYYYMMDD_N.jsonl`,
+`warn_YYYYMMDD_N.jsonl`, and `err_YYYYMMDD_N.jsonl`. Rotation uses UTC dates and size.
+Zero size/count settings select defaults; negative values are rejected.
+
+> [!IMPORTANT]
+> Use exactly one file output instance in one process per managed `logs` directory.
+> There is no cross-instance or inter-process directory lock. Multiple goroutines
+> may safely share one runtime, but separate file outputs can rotate or delete each
+> other's files. Retention is not a hard disk quota.
+
+Missing directories are created with `0755`, subject to `umask`. Existing directory
+and file permissions are not changed. Modes such as `0o200` are rejected during
+setup; use `0o600` or `0o644`. The process must retain read/write access after
+`umask` and other access controls, because resuming a file reads its final byte.
+
+For an independent runtime, import `github.com/LazyEasyDev/EasyLog/file`, create an
+output with `file.New(file.Options{BaseDirectory: directory})`, check the returned
+error, and pass it to `easylog.New`.
+
+<details>
+<summary><strong>File rotation, recovery, and error behavior</strong></summary>
+
+- File `Close` syncs and closes every active segment, even if syncing fails. Both
+  errors are returned with level and operation context.
+- Restarts resume usable current-day segments. The JSON level selects the severity
+  bucket; missing, unknown, or non-string levels fall back to INFO. Standard slog
+  level offsets are supported.
+- Bytes include the trailing newline. A record is never deliberately split across
+  segments; one oversized record may exceed the limit in an empty segment.
+- Cleanup runs on opening or rotation, not in the background. Deletion errors are
+  ignored and stop that cleanup attempt; later openings retry.
+- Rotation attempts to sync the old segment but currently ignores sync errors.
+  Later `Sync` or `Close` cannot report those earlier failures.
+- Resume or previous-segment close errors may be returned even when the new record
+  was written. Do not blindly retry: you could duplicate the record.
+- Creation failure drops that file record; other outputs are still attempted.
+  Partial-write errors are not replayed. Short writes continue with the remainder.
+- Direct `WriteRecord` input must be a JSON object with its newline already present.
+  Empty input is a no-op unless the output is closed.
+
+</details>
+
+## Memory
+
+Memory retention is **disabled by default**. Enable it with a positive byte limit:
 
 ```go
 runtime := easylog.New(easylog.Options{
@@ -342,8 +356,7 @@ runtime := easylog.New(easylog.Options{
 defer runtime.Close()
 
 runtime.Logger().Info("job completed", "rows", 128)
-consumer := runtime.Consumer()
-page, err := consumer.Take(100)
+page, err := runtime.Consumer().Take(100)
 if err != nil {
 	panic(err)
 }
@@ -354,43 +367,32 @@ for _, line := range page {
 }
 ```
 
-This retains records without live outputs. Memory can also run alongside any
-outputs. For a global runtime, call `easylog.Consumer()` instead.
+This example retains JSON without live outputs. Memory can also run alongside
+outputs. `DefaultMemoryMaxBytes` is 8 MiB, not an automatically enabled default.
+`Consumer()` returns nil when retention is disabled; use `easylog.Consumer()` for
+the global runtime.
 
 | Method | Behavior |
 | --- | --- |
-| `Take(n)`, `n > 0` | Remove and return up to `n` oldest records |
-| `Take(0)` | Drain all retained records |
-| `Take(n)`, `n < 0` | Return `ErrInvalidPageSize` without changing the queue |
-| `Len()` | Count retained records |
-| `Bytes()` | Count retained JSON bytes, including newlines |
+| `Take(n)` with `n > 0` | Remove and return up to `n` oldest records |
+| `Take(0)` | Drain the queue |
+| `Take(n)` with `n < 0` | Return `ErrInvalidPageSize` without changing the queue |
+| `Len()` | Retained record count |
+| `Bytes()` | Retained JSON bytes, including newlines |
 
-`Take` is nonblocking; an empty queue returns `nil, nil`. Returned lines are
-independent mutable copies. Oldest records are evicted to fit; oversized records
-are skipped without evicting others. Limits count JSON bytes, not total heap usage.
-The queue reuses ring-buffer slots and retains spare capacity until fully drained.
-Join lines with `bytes.Join(page, nil)` for NDJSON; use `[]json.RawMessage` for JSON
-arrays, since `[][]byte` marshals as base64 strings.
+`Take` does not wait for new records; an empty queue returns `nil, nil`. Returned
+lines are independent, mutable copies. Oldest records are evicted to fit; an
+oversized record is skipped without evicting others. The limit covers JSON bytes,
+not total heap usage. Spare ring-buffer slots remain allocated until fully drained.
 
-## Options
-
-Use `Options` with `New` or `InitWithOutputs`, or through `InitOptions.Runtime`.
-
-| Option | Default | Purpose |
-| --- | --- | --- |
-| `Level` | INFO | Fixed threshold or a `*slog.LevelVar` |
-| `AddSource` | `false` | Include source function, file, and line |
-| `ReplaceAttr` | nil | Customize resolved custom attributes; built-in metadata is protected |
-| `Enrichers` | nil | Extract fields from each enabled call's context |
-| `MemoryMaxBytes` | `0`, disabled | Positive values enable bounded retention |
-
-Nil `InitOptions.File` or `InitOptions.Terminal` disables that output.
-`InitOptions{}` and `New(Options{}, nil)` configure no outputs or memory.
+Join lines with `bytes.Join(page, nil)` for NDJSON. For a JSON array use
+`[]json.RawMessage`, since `[][]byte` marshals as base64 strings.
 
 ## Shutdown
 
-Stop and join producers, then `Sync`, then `Close`. **Close does not call Sync** or
-stop application goroutines. Handle both errors even if syncing fails:
+**Stop and join logging workers first.** EasyLog does not stop your goroutines.
+To explicitly sync every output, call `Sync`, then always call `Close`, even when
+syncing fails:
 
 ```go
 syncErr := runtime.Sync()
@@ -400,58 +402,58 @@ if err := errors.Join(syncErr, closeErr); err != nil {
 }
 ```
 
-For global initialization, use `easylog.Sync()` and `easylog.Close()` instead.
-`easylog.Close()` returns `ErrInitializing` if setup is still in progress; it does
-not wait for or cancel setup. Wait for `Init` or `InitWithOutputs` to return before
-closing the package runtime.
-The runnable examples report both errors during deferred cleanup.
-Terminal `Sync`/`Close` are no-ops: flush and close caller-owned writers yourself.
+This snippet also imports `errors` and `fmt`. Use `easylog.Sync()` and
+`easylog.Close()` for global initialization.
 
-## Design and Contracts
+| Output | What `Close()` does |
+| --- | --- |
+| Built-in file output | Attempts to sync and close every active file; returns both kinds of error |
+| Terminal text / JSON | No-op; the caller must flush and close its writer |
+| Custom output | Runs its own `Close`; the runtime does not separately call its `Sync` |
 
-### Encoding
+`Close` is idempotent. Concurrent/repeated **runtime** closes return nil immediately;
+only the first waits and reports errors. A blocked output can block shutdown.
+Syncing is a durability attempt, not a promise that logs survive every crash or
+hardware failure.
 
-Each enabled call builds a complete `slog.Record` for outputs and produces one JSON
-line through a standard `slog.JSONHandler`. EasyLog retains fields prepared by
-`With` and combines them with the call's fields using the nesting from `WithGroup`.
-Bound values are resolved, replaced, and snapshotted at binding; direct fields and
-enrichers are prepared per call, never once per destination. Duplicate keys and
-attribute order are preserved.
+## Concurrency and Callbacks
 
-Derived JSON handlers preformat bound attributes at `With` time and reuse those
-bytes, whether `AddSource` is enabled or not. They receive only the new call
-attributes, while outputs still receive the complete record. The standard handler
-generates source metadata per call, outside `WithGroup` groups and before `msg`,
-following slog's field order. Preparation avoids a separate copy of incoming
-fields and reuses read-only bound slices when no merge is needed.
+One runtime supports concurrent logging. Output delivery is synchronous and
+serialized; a slow output delays other log calls. Preparation callbacks may run
+concurrently, so protect any state they share.
 
-Preparation resolves `LogValuer` values and runs custom replacement before output.
-Time-valued attributes become formatted strings; arbitrary values are snapshotted
-using JSON encoding (or an error's string representation). JSON strings become
-string attributes; other encoded values become owned `json.RawMessage` attributes.
-Custom marshalers therefore run once, not separately for JSON and text. Treat these
-prepared values as immutable.
+> [!WARNING]
+> **No reentry guard exists.** An output's `WriteRecord`, `Sync`, or `Close` must
+> not log through the same runtime or call its `Sync` or `Close`. The outer call
+> holds a mutex; reentry can deadlock instead of returning an error. This is a
+> caller responsibility, not an automatically enforced check.
 
-The handler's capture writer copies the completed JSON line without delivering it.
-After encoding returns, the handler passes the prepared `slog.Record` and JSON bytes
-together to the runtime. Capture is serialized across a runtime's derived handlers,
-and its lock is released before output delivery. Optional memory retains JSON only;
-all outputs receive the same complete record and owned JSON bytes. Built-in text
-output formats the record directly without decoding the JSON or evaluating user
-values again. It reuses a buffer under the terminal's write lock. Logging is
-synchronous and output writes are serialized. Preparation callbacks may run
-concurrently; synchronize their mutable state.
+For custom outputs, return failures as errors instead of logging through that
+runtime. Ordinary `slog.Info` and similar calls discard handler errors; use an
+independent diagnostic logger or explicit handler error handling when needed.
 
-Top-level user keys/groups `time`, `level`, `msg`, and `source` are reserved and
-silently filtered, including replacement collisions and inlined unnamed groups.
-User fields with reserved root keys are omitted before `ReplaceAttr`, without
-resolving their values. For example, `logger.Info("hello", "msg", "override")` behaves like
-`logger.Info("hello")`.
-These names are allowed inside named groups. Built-in metadata is protected from
-replacement. Record severity controls filtering and display; file routing reads
-the corresponding JSON level.
+`ReplaceAttr`, enrichers, `LogValuer.LogValue`, and custom JSON marshalers must not
+call package/runtime `Sync` or `Close`. Avoid logging through the same runtime
+from these callbacks: recursion can repeat indefinitely. Preparation is outside
+EasyLog's capture/output locks, but a call from `log.Print` still holds the
+standard logger's mutex. Recursive `log.Print`, or `easylog.Close()` restoring
+that logger, can deadlock.
 
-### Custom Outputs
+Create a separate diagnostic logger **once, outside callbacks**, using `log` and
+`os`, then use it for callback/output diagnostics:
+
+```go
+diagnostic := log.New(os.Stderr, "easylog diagnostic: ", log.LstdFlags)
+diagnostic.Print("output unavailable")
+```
+
+Its writer must not route back into EasyLog. To request shutdown from a callback,
+signal code outside the logging call without blocking or waiting for completion,
+then return. That code can stop workers and close the runtime.
+
+## Custom Outputs
+
+Implement `easylog.Output` and pass it to `New` or `InitWithOutputs`:
 
 ```go
 type Output interface {
@@ -461,102 +463,122 @@ type Output interface {
 }
 ```
 
-The record is complete: it contains enriched, filtered, resolved and replaced
-custom attributes, including bound fields and group nesting. `Time`, `Level`, and
-`Message` contain the protected metadata. When `AddSource` is enabled and a source
-location is available, a prepared `source` group holds its function, file, and line;
-formatters must not infer source visibility from `PC` alone. A plain
-`slog.JSONHandler` with default options can encode the same fields without further
-binding, replacement, or source generation. Its `source` attribute appears after
-`msg`, unlike the runtime JSON's native slog metadata order; the bytes need not match.
-Treat attributes, nested group slices, and raw JSON values as read-only; call
-`record.Clone()` before adding attributes and deep-copy nested data before changing
-it. Outputs may retain the record and JSON bytes without rerunning callbacks.
+| Input | Contract |
+| --- | --- |
+| `record` | Complete prepared record, including bound fields, groups, and resolved/replaced values |
+| `jsonContent` | Owned JSON bytes ending in one newline; do not add another newline |
+| Ownership | Both inputs may be retained, but are read-only, including nested values and spare byte capacity |
 
-`terminal.TextFormatter.FormatRecord(record)` formats a prepared record directly.
-It uses zero elapsed time and no automatic colors.
+Clone the record before adding fields; deep-copy nested groups/raw JSON before
+changing them. Copy JSON bytes before modifying them. Every output is attempted
+after a returned error, and errors are joined with output indexes. Do not panic:
+a panic propagates and can prevent later outputs from being called or closed.
+Coordinate ownership when sharing outputs between runtimes. Plain nil entries are
+skipped; typed-nil outputs are unsupported. Writers must follow `io.Writer` rules.
 
-Outputs receive a complete JSON object with one trailing newline. They may retain
-the slice but must not modify its backing array, including spare capacity; copy
-before modifying. File and raw JSON outputs preserve bytes without adding a newline.
-Underlying writers must obey `io.Writer` rules.
+For explicit write errors, use `runtime.Handler().Enabled` and `.Handle` with a
+`slog.Record`, or report errors independently inside the output. The
+[no-reentry rule](#concurrency-and-callbacks) applies to all output methods.
 
-The runtime copies the output slice, skips nil entries, and manages `Sync`/`Close`.
-Typed-nil outputs are unsupported. Every output is attempted in order; errors are
-joined with indexes. Ordinary slog calls do not return handler errors. For explicit
-error handling, use `Handler.Enabled` and `Handler.Handle` with a `slog.Record`, or
-handle errors inside your output.
+## Reference
 
-Output methods must not reenter logging, `Sync`, or `Close` on the same runtime:
-this can deadlock. Coordinate ownership when sharing outputs across runtimes.
+<details>
+<summary><strong>Prepared records and encoding</strong></summary>
 
-### File Details
+Each enabled call produces a complete `slog.Record` and one JSON line via the
+standard `slog.JSONHandler`, even when only text output is configured. Custom
+fields are prepared once, not once per destination. JSON capture is serialized
+and its lock is released before outputs run. Text formats the record directly;
+it does not parse JSON or reevaluate user values.
 
-- Directory ownership and access controls are the application's responsibility.
-- Final JSON `level` chooses `debug_`, `info_`, `warn_`, or `err_`. Standard slog
-  strings and offsets such as `INFO+2` are bucketed by severity. Missing, removed,
-  renamed, unknown, or non-string levels route to INFO.
-- Nonempty input must be a valid JSON object. Empty input is a no-op after the
-  closed check. Restarts resume usable current-day segments.
-- Sizes count exact input bytes, including newlines. Records are never split;
-  an oversized record can exceed the threshold in an empty segment.
-- Rotation attempts to sync the old segment but ignores sync failures. Explicit
-  `Sync` reports active-segment errors, not earlier ignored failures.
-- Resume and previous-segment close errors are returned even if fallback or rotation
-	writes the current record successfully. Such an error does not imply the record
-	was lost; blindly retrying may duplicate it.
-- Cleanup runs on segment opening/rotation, not at startup or in the background.
-	Failed deletion ends that attempt; later openings retry. Cleanup errors are ignored,
-	so disk usage is not strictly bounded.
-- Failed segment creation drops that file record without writing to the old segment
-  or replaying later. Later calls retry creation; other outputs are still attempted.
-- Short writes continue with the remainder. Partial-write errors are not replayed;
-  actual bytes written count toward segment size.
+`With` prepares values and caches their JSON at binding. Per-call attributes and
+enricher fields are prepared for each enabled call. Duplicate custom keys and
+attribute order are preserved. Reserved root fields are dropped before resolution
+or replacement; named groups may contain those same keys.
 
-### Text Details
+Time-valued attributes become formatted strings. Arbitrary values are snapshotted
+using JSON encoding, with slog-style error strings where encoding fails. JSON
+string results become string attributes; other JSON values become owned
+`json.RawMessage` attributes. Treat prepared values as immutable.
 
-Runtime text output reads the prepared record's message, time, level, and attributes
-directly. Fields become `key=value`, with groups, objects, and arrays kept as JSON.
-Control characters are escaped; DEBUG/ERROR prefixes shorten to DEBU/ERRO.
+When source is enabled and available, the output record has an explicit root
+`source` group. `PC` alone does not imply it should be displayed. Encoding that
+complete record with a default `slog.JSONHandler` preserves its fields, but not
+necessarily byte order: runtime JSON uses native slog source-before-`msg` order;
+the prepared source attribute is emitted after `msg` when reencoded.
 
-The record's level colors the prefix and field names: DEBUG gray, INFO cyan, WARN
-yellow, ERROR red. Other slog levels are uncolored. Messages, timestamps, and
-values keep the default color. Elapsed time is independent of the record's time;
-a Go timestamp layout does not synthesize a zero timestamp. The reusable terminal
-buffer retains its capacity after a large line.
+`terminal.TextFormatter.FormatRecord(record)` formats a prepared record with
+zero elapsed time and no automatic color detection. Runtime terminal output
+reuses its buffer; capacity after a large line is retained.
 
-### Lifecycle Details
+</details>
 
-Close disables new calls, waits for active output I/O, and closes every output.
-Active preparation and encoding are not awaited. Under the output lock, calls check
-for closure before retaining records or writing outputs. Once the first Close
-finishes, no more records can enter memory; a captured consumer remains drainable.
-Retention precedes that record's output I/O, including when destinations fail,
-but waits behind earlier output I/O.
+<details>
+<summary><strong>Initialization and lifecycle details</strong></summary>
 
-Duplicate closes return nil immediately; only the first waits and reports errors.
-A blocked output can block shutdown indefinitely. Runtime `Sync` returns `ErrClosed`
-once shutdown starts. Package `Close` restores previous slog and standard log
-settings only if EasyLog is still the default. Coordinate global reconfiguration;
-initialization returns `ErrAlreadyInitialized` while initializing, installed, or
-closing and leaves rejected outputs untouched. Failed initialization releases its
-reservation so setup can be retried.
+- Initialize before starting logging workers. Coordinate external `slog.SetDefault`
+  and standard-log changes with `Init`/`Close`; global restoration is not atomic.
+- `Init` and `InitWithOutputs` reject initializing, installed, or closing state
+  with `ErrAlreadyInitialized`. Rejected `InitWithOutputs` calls leave outputs
+  untouched. Failed setup releases its reservation so initialization can be retried.
+- During setup, package `Consumer()` returns nil, `Sync()` is a no-op, and `Close()`
+  returns `ErrInitializing` without waiting or cancelling initialization.
+- Package `Close` restores earlier `slog`/`log` settings only if the exact logger
+  installed by `Init` is still default. Replacing it with a child created by `With`
+  bypasses restoration too; that child remains tied to the closed runtime.
+- Runtime closure rejects new records and waits for output I/O, but does not wait
+  for ongoing preparation/encoding. No records enter memory after shutdown
+  completes; an already captured memory consumer remains drainable.
+- Memory retention happens before output delivery, including when an output
+  returns an error. It waits behind earlier output I/O.
+- Custom output panics are not recovered. Package shutdown state is reset during
+  unwinding, so initialization is possible after the caller recovers, but remaining
+  outputs may not have been closed.
 
-Package state is not locked while initialization creates outputs or accesses Go's
-global logger. Until the initialized runtime is published, `easylog.Consumer()`
-returns nil and `easylog.Sync()` is a no-op. A concurrent `easylog.Close()` returns
-`ErrInitializing`. Initialize before starting logging workers when possible, and
-coordinate any external `slog.SetDefault` or standard-log reconfiguration.
+</details>
 
-## Development and Benchmarks
+## Examples
+
+From a checkout, run any example without creating log files:
+
+```sh
+go run ./main
+go run ./main -example new
+go run ./main -help
+```
+
+To exercise rotating files, supply an absolute base directory:
+
+```sh
+go run ./main -example init -log-dir /tmp/easylog-demo
+```
+
+Only this opt-in file example writes under `<log-dir>/logs`.
+
+| Selection | Demonstrates |
+| --- | --- |
+| `init` | Global slog/standard log, levels, optional files |
+| `new` | Independent JSON logger, source, redaction, groups, dynamic levels |
+| `context` | Context enrichers |
+| `memory` | Retention, paging, draining |
+| `outputs` | Text and JSON from the same event |
+| `all` | All examples; the default |
+
+See [main/main.go](main/main.go) for full source and shutdown error handling.
+
+## Development
 
 ```sh
 go build ./...
 go vet ./...
-go run -race ./main
+go run -race ./main -example all
 ```
 
-There are no committed test or benchmark source files. The commands above compile,
-check, and exercise the examples; they are not a comprehensive test suite.
-Benchmark comparisons need a separate harness with matching payloads, output
-settings, and allocation measurements.
+These are build, vet, and example smoke checks, not a comprehensive test suite.
+There are no committed test or benchmark sources. Use a separate harness for
+regression tests and benchmarks; compare matching payloads, output formats,
+source/memory settings, and allocations. JSON and text timings are not interchangeable.
+
+## License
+
+EasyLog is available under the [MIT license](LICENSE).

@@ -19,15 +19,15 @@ import (
 )
 
 const (
-	defaultMaxSegmentBytes int64 = 8 << 20
-	defaultMaxSegments           = 7
-	defaultPermissions           = 0o644
-	dateLayout                   = "20060102"
-	logsDirectoryName            = "logs"
-	debugPrefix                  = "debug"
-	infoPrefix                   = "info"
-	warningPrefix                = "warn"
-	errorPrefix                  = "err"
+	defaultMaxSegmentBytes     int64 = 8 << 20
+	defaultMaxSegmentsPerLevel       = 7
+	defaultPermissions               = 0o644
+	dateLayout                       = "20060102"
+	logsDirectoryName                = "logs"
+	debugPrefix                      = "debug"
+	infoPrefix                       = "info"
+	warningPrefix                    = "warn"
+	errorPrefix                      = "err"
 )
 
 type levelBucket uint8
@@ -51,11 +51,12 @@ var ErrClosed = errors.New("easylog/file: closed")
 
 // Options configures segmented file output.
 type Options struct {
-	// Directory is the absolute base path where EasyLog creates its logs subdirectory.
-	Directory       string
-	MaxSegmentBytes int64
-	MaxSegments     int
-	// Permissions applies only to new segment files; zero defaults to 0644 before umask.
+	// BaseDirectory is the absolute base path where EasyLog creates its logs subdirectory.
+	BaseDirectory       string
+	MaxSegmentBytes     int64
+	MaxSegmentsPerLevel int
+	// Permissions applies only to new segment files and must include owner read/write.
+	// Zero defaults to 0644 before umask; existing file permissions are unchanged.
 	Permissions fs.FileMode
 }
 
@@ -100,7 +101,7 @@ func newWithClock(options Options, now func() time.Time) (*Output, error) {
 	if now == nil {
 		now = time.Now
 	}
-	logsDirectory := filepath.Join(options.Directory, logsDirectoryName)
+	logsDirectory := filepath.Join(options.BaseDirectory, logsDirectoryName)
 	if err := os.MkdirAll(logsDirectory, 0o755); err != nil {
 		return nil, fmt.Errorf("create log directory: %w", err)
 	}
@@ -202,7 +203,7 @@ func (o *Output) Sync() error {
 	return errors.Join(syncErrors...)
 }
 
-// Close idempotently closes the active segment.
+// Close idempotently syncs and closes every active segment, even if syncing fails.
 func (o *Output) Close() error {
 	o.mu.Lock()
 	defer o.mu.Unlock()
@@ -213,8 +214,11 @@ func (o *Output) Close() error {
 	var closeErrors []error
 	for bucket := range o.stores {
 		if active := o.stores[bucket].active; active != nil {
+			if err := active.Sync(); err != nil {
+				closeErrors = append(closeErrors, fmt.Errorf("%s sync: %w", levelPrefixes[bucket], err))
+			}
 			if err := active.Close(); err != nil {
-				closeErrors = append(closeErrors, fmt.Errorf("%s: %w", levelPrefixes[bucket], err))
+				closeErrors = append(closeErrors, fmt.Errorf("%s close: %w", levelPrefixes[bucket], err))
 			}
 		}
 	}
@@ -222,26 +226,29 @@ func (o *Output) Close() error {
 }
 
 func normalizeOptions(options Options) (Options, error) {
-	if !filepath.IsAbs(options.Directory) {
-		return Options{}, errors.New("easylog/file: Directory must be an absolute path")
+	if !filepath.IsAbs(options.BaseDirectory) {
+		return Options{}, errors.New("easylog/file: BaseDirectory must be an absolute path")
 	}
 	if options.MaxSegmentBytes < 0 {
 		return Options{}, errors.New("easylog/file: MaxSegmentBytes must not be negative")
 	}
-	if options.MaxSegments < 0 {
-		return Options{}, errors.New("easylog/file: MaxSegments must not be negative")
+	if options.MaxSegmentsPerLevel < 0 {
+		return Options{}, errors.New("easylog/file: MaxSegmentsPerLevel must not be negative")
 	}
 	if options.MaxSegmentBytes == 0 {
 		options.MaxSegmentBytes = defaultMaxSegmentBytes
 	}
-	if options.MaxSegments == 0 {
-		options.MaxSegments = defaultMaxSegments
+	if options.MaxSegmentsPerLevel == 0 {
+		options.MaxSegmentsPerLevel = defaultMaxSegmentsPerLevel
 	}
 	if options.Permissions == 0 {
 		options.Permissions = defaultPermissions
 	}
 	if options.Permissions.Perm() != options.Permissions {
 		return Options{}, errors.New("easylog/file: Permissions must contain only permission bits")
+	}
+	if options.Permissions&0o600 != 0o600 {
+		return Options{}, errors.New("easylog/file: Permissions must include owner read and write access")
 	}
 	return options, nil
 }
@@ -413,7 +420,7 @@ func (o *Output) resumeSegment(store *levelStore, date time.Time) (bool, error) 
 }
 
 func (o *Output) cleanupClosedSegments(store *levelStore) error {
-	for len(store.segments) > o.options.MaxSegments {
+	for len(store.segments) > o.options.MaxSegmentsPerLevel {
 		oldest := store.segments[0]
 		if oldest.name == store.activeSegment.name {
 			return nil

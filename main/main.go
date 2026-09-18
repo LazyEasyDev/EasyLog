@@ -71,7 +71,7 @@ func initializedLogger(logDirectory string) (err error) {
 		if err != nil {
 			return err
 		}
-		options.File = &easylog.FileOptions{Directory: absoluteDirectory}
+		options.File = &easylog.FileOptions{BaseDirectory: absoluteDirectory}
 	}
 	if err := easylog.Init(options); err != nil {
 		return err
@@ -165,7 +165,7 @@ func memoryConsumer() (err error) {
 
 func multipleOutputs() (err error) {
 	var jsonOutput bytes.Buffer
-	formatter := terminal.GetDefaultTextFormatter()
+	formatter := terminal.DefaultTextFormatter()
 	formatter.DisableColors = true
 	formatter.DisableTimestamp = true
 	if err := easylog.InitWithOutputs(easylog.Options{}, []easylog.Output{

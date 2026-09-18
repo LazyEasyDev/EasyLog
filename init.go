@@ -165,6 +165,11 @@ func Close() error {
 	packageState.instance = nil
 	packageState.closing = true
 	packageState.Unlock()
+	defer func() {
+		packageState.Lock()
+		packageState.closing = false
+		packageState.Unlock()
+	}()
 
 	if slog.Default() == instance.logger {
 		slog.SetDefault(instance.previousLogger)
@@ -172,10 +177,5 @@ func Close() error {
 		log.SetFlags(instance.previousLogFlags)
 	}
 
-	closeErr := instance.runtime.Close()
-
-	packageState.Lock()
-	packageState.closing = false
-	packageState.Unlock()
-	return closeErr
+	return instance.runtime.Close()
 }

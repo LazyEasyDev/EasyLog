@@ -19,7 +19,7 @@ type Output struct {
 	buffer    bytes.Buffer
 }
 
-func GetDefaultTextFormatter() TextFormatter {
+func DefaultTextFormatter() TextFormatter {
 	return TextFormatter{
 		ForceColors:      false,
 		DisableColors:    false,
@@ -33,7 +33,7 @@ func GetDefaultTextFormatter() TextFormatter {
 // The formatter is copied; colors are detected and elapsed time starts here.
 func New(writer io.Writer, formatter *TextFormatter) *Output {
 	output := NewJSON(writer)
-	configured := GetDefaultTextFormatter()
+	configured := DefaultTextFormatter()
 	if formatter != nil {
 		configured = *formatter
 	}
