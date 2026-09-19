@@ -55,7 +55,7 @@ WARN[0000] request retrying service=checkout attempt=2
 
 `Init` installs `slog.Default()` and routes standard `log.Print` calls through
 EasyLog too. This example writes only to stdout; it creates no files or memory store.
-It explicitly enables INFO logs; omitting `Level` uses WARN.
+INFO logs are enabled by default, even when `Level` is omitted.
 
 ### Choose Your Setup
 
@@ -110,17 +110,16 @@ Pass `Options` to `New` or `InitWithOutputs`. For `Init`, use `InitOptions.Runti
 
 | Option | Default | Purpose |
 | --- | --- | --- |
-| `Level` | `slog.LevelWarn` | Fixed threshold or a dynamic `*slog.LevelVar` |
+| `Level` | `slog.LevelInfo` | Fixed threshold or a dynamic `*slog.LevelVar` |
 | `AddSource` | `false` | Include the logging call's function, file, and line when available |
 | `ReplaceAttr` | `nil` | Transform custom fields; built-in metadata is protected |
 | `Enrichers` | `nil` | Extract fields from each enabled call's context |
 | `MemoryMaxBytes` | `0` | Enable memory retention with a positive byte limit |
 
-When `Level` is unset or a nil `*slog.LevelVar`, only WARN and higher levels are
-emitted. Set `Level: slog.LevelInfo` to include INFO, or `Level: slog.LevelDebug`
-to include DEBUG. Standard `log.Print` calls normally use INFO, so they are also
-filtered by the WARN default unless you change the threshold or bridge level with
-`slog.SetLogLoggerLevel`.
+When `Level` is unset or a nil `*slog.LevelVar`, INFO and higher levels are emitted.
+Set `Level: slog.LevelDebug` to include DEBUG, or `Level: slog.LevelWarn` to emit
+only WARN and higher levels. Standard `log.Print` calls normally use INFO, so they
+are included by default. Change the bridge level with `slog.SetLogLoggerLevel`.
 
 > [!NOTE]
 > Outputs and memory are opt-in. `InitOptions{}` and `New(Options{}, nil)` configure
