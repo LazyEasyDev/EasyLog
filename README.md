@@ -129,7 +129,7 @@ filtered by the WARN default unless you change the threshold or bridge level wit
 The recipes below are function-body snippets. Import the packages they use, and
 reuse the independent example's `runtime` where one is not created. Short snippets
 defer `Close` for brevity; use the error handling shown in [shutdown](#shutdown).
-Complete runnable recipes are in [main/main.go](main/main.go).
+A minimal runnable application is in [main/main.go](main/main.go).
 
 ## Logging
 
@@ -261,6 +261,22 @@ Automatic colors respect `NO_COLOR`, `TERM=dumb`, and terminal capabilities.
 Formatters are copied; a zero-value formatter hides the level. The level and field
 names are colored, not the message or values. Groups and objects remain JSON;
 control characters are escaped. DEBUG and ERROR display as DEBU and ERRO.
+
+Detection runs once when the output is constructed and only for a direct
+`*os.File`. Unix detection checks whether that file is a TTY and excludes the
+exact monochrome `TERM` names `vt100`, `vt102`, and `vt220`, as well as `dumb`.
+This is a small heuristic, not a terminfo query.
+
+On Windows, EasyLog attempts to enable processed output and virtual-terminal
+processing when automatic or forced colors are requested, preserving other
+console flags. Automatic colors fall back to plain output if setup fails.
+`DisableColors` prevents console changes; automatic `NO_COLOR`/`TERM=dumb`
+opt-outs do too. Console mode changes are shared and are not restored by `Close`.
+
+`ForceColors` overrides environment and terminal exclusions, and still emits
+ANSI to pipes, custom writers, or unsupported consoles even if preparation fails.
+`DisableColors` wins over everything. See [real-platform testing](integration/README.md)
+for verification methods and coverage limits.
 
 ### JSON and Multiple Outputs
 
@@ -555,30 +571,18 @@ reuses its buffer; capacity after a large line is retained.
 
 ## Examples
 
-From a checkout, run any example without creating log files:
+From a checkout, run the minimal example:
 
 ```sh
 go run ./main
-go run ./main -example new
-go run ./main -help
 ```
 
-To exercise rotating files, supply an absolute base directory:
-
-```sh
-go run ./main -example init -log-dir /tmp/easylog-demo
-```
-
-Only this opt-in file example writes under `<log-dir>/logs`.
-
-| Selection | Demonstrates |
-| --- | --- |
-| `init` | Global slog/standard log, levels, optional files |
-| `new` | Independent JSON logger, source, redaction, groups, dynamic levels |
-| `context` | Context enrichers |
-| `memory` | Retention, paging, draining |
-| `outputs` | Text and JSON from the same event |
-| `all` | All examples; the default |
+It writes INFO, WARN, DEBUG, and ERROR records to stdout **and creates a `logs`
+subdirectory in its working directory**. It demonstrates global initialization,
+bound attributes, and rotating JSON files. There are no `-example`, `-log-dir`,
+or `-help` flags; use the configuration recipes above for other setups. Run the
+compiled example in a temporary directory when testing to avoid writing logs
+into the checkout.
 
 See [main/main.go](main/main.go) for full source and shutdown error handling.
 
@@ -587,13 +591,21 @@ See [main/main.go](main/main.go) for full source and shutdown error handling.
 ```sh
 go build ./...
 go vet ./...
-go run -race ./main -example all
+go test ./...
+go test -race ./...
+go run ./integration/platformprobe
 ```
 
-These are build, vet, and example smoke checks, not a comprehensive test suite.
-There are no committed test or benchmark sources. Use a separate harness for
-regression tests and benchmarks; compare matching payloads, output formats,
-source/memory settings, and allocations. JSON and text timings are not interchangeable.
+Formatter regression tests and a real-process platform probe are committed.
+The probe uses temporary files, real Unix PTYs, or native Windows console cells;
+see [integration testing](integration/README.md). It is not a comprehensive test
+suite for every logging feature or terminal emulator. No benchmarks are included;
+compare matching payloads, output formats, source/memory settings, and allocations.
+JSON and text timings are not interchangeable.
+
+The [platform runtime report](docs/platform-testing/README.md) includes real
+Linux, FreeBSD, and Windows execution results, screenshots, and known color
+detection limitations.
 
 ## License
 

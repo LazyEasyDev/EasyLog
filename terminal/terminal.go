@@ -31,13 +31,15 @@ func DefaultTextFormatter() TextFormatter {
 
 // New creates text output; a nil writer uses os.Stderr and a nil formatter uses defaults.
 // The formatter is copied; colors are detected and elapsed time starts here.
+// When colors are requested, Windows consoles are prepared for ANSI output.
+// Console mode changes are shared with other writers and are not restored by Close.
 func New(writer io.Writer, formatter *TextFormatter) *Output {
 	output := NewJSON(writer)
 	configured := DefaultTextFormatter()
 	if formatter != nil {
 		configured = *formatter
 	}
-	configured.ForceColors = !configured.DisableColors && (configured.ForceColors || autoColors(output.writer))
+	configured.ForceColors = !configured.DisableColors && useColors(output.writer, configured.ForceColors)
 	output.formatter = &configured
 	output.startedAt = time.Now()
 	return output
@@ -52,23 +54,25 @@ func NewJSON(writer io.Writer) *Output {
 	return &Output{writer: writer}
 }
 
-func autoColors(writer io.Writer) bool {
-	if os.Getenv("NO_COLOR") != "" || os.Getenv("TERM") == "dumb" {
+func useColors(writer io.Writer, force bool) bool {
+	if !force && (os.Getenv("NO_COLOR") != "" || os.Getenv("TERM") == "dumb") {
 		return false
 	}
 	file, ok := writer.(*os.File)
 	if !ok || file == nil {
-		return false
+		return force
 	}
 	connection, err := file.SyscallConn()
 	if err != nil {
-		return false
+		return force
 	}
 	supported := false
 	err = connection.Control(func(descriptor uintptr) {
 		supported = isColorTerminal(descriptor)
 	})
-	return err == nil && supported
+	// Prepare a real console even for forced colors, but preserve explicit ANSI
+	// output to pipes/custom writers or consoles where preparation failed.
+	return force || err == nil && supported
 }
 
 // WriteRecord renders a complete prepared record in text mode or forwards JSON unchanged.

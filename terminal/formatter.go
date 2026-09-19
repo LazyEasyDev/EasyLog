@@ -8,7 +8,8 @@ import (
 
 // TextFormatter renders prepared records as a level, timestamp, message, and key=value fields.
 type TextFormatter struct {
-	// ForceColors emits ANSI colors without terminal detection.
+	// ForceColors emits ANSI even when detection or console preparation fails.
+	// New still attempts to prepare Windows console files for ANSI output.
 	ForceColors bool
 	// DisableColors removes ANSI colors and takes precedence over ForceColors.
 	DisableColors bool
