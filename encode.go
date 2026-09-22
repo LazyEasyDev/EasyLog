@@ -28,7 +28,18 @@ func newJSONHandler(writer *jsonWriter, addSource bool) *slog.JSONHandler {
 	return slog.NewJSONHandler(writer, &slog.HandlerOptions{AddSource: addSource})
 }
 
+func normalizeJSONTimestamp(timestamp time.Time) time.Time {
+	timestamp = timestamp.UTC()
+	if timestamp.Nanosecond()%10 == 0 {
+		timestamp = timestamp.Add(time.Nanosecond)
+	}
+	return timestamp
+}
+
 func (h *handler) encodeJSON(ctx context.Context, record slog.Record, callAttrs []slog.Attr) ([]byte, error) {
+	if !record.Time.IsZero() {
+		record.Time = normalizeJSONTimestamp(record.Time)
+	}
 	if h.state.addSource || len(h.bound) != 0 || len(h.groups) != 0 {
 		record = slog.NewRecord(record.Time, record.Level, record.Message, record.PC)
 		record.AddAttrs(callAttrs...)
@@ -171,7 +182,7 @@ func freezeValue(value slog.Value) (result slog.Value) {
 		}
 	case slog.KindTime:
 		if timestamp := value.Time(); timestamp.Year() >= 0 && timestamp.Year() <= 9999 {
-			return slog.StringValue(timestamp.Format(time.RFC3339Nano))
+			return slog.StringValue(normalizeJSONTimestamp(timestamp).Format(time.RFC3339Nano))
 		}
 	case slog.KindAny:
 		if _, marshaler := value.Any().(json.Marshaler); !marshaler {
