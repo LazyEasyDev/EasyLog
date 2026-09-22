@@ -102,15 +102,14 @@ func main() {
 `*slog.Logger`; `runtime.Handler()` exposes its handler. JSON output is NDJSON:
 one JSON object per line, including `time`, `level`, `msg`, and your fields.
 
-JSON record timestamps and time-valued slog attributes use UTC with nine fractional
-digits, such as `2026-09-22T06:08:57.285866001Z` (30 characters for four-digit years).
-If the nanosecond value ends in zero, it is advanced by one nanosecond so the
-standard JSON handler retains all nine digits without a formatting hook. Other
-timestamps keep their original instant. Zero record timestamps remain omitted.
+JSON record timestamps and time-valued slog attributes use UTC and `RFC3339Nano`,
+such as `2026-09-22T06:08:57.285866Z`, preserving the original instant without
+rounding or adjustment. Trailing fractional zeros are omitted, and whole-second
+timestamps have no fractional part, so timestamp lengths can vary.
+Zero record timestamps remain omitted.
 If the UTC year is outside `0000` through `9999`, normalization returns zero time
-without the one-nanosecond adjustment. The record's `time` field is then omitted;
-custom time attributes use `0001-01-01T00:00:00Z` instead. This invalid-time fallback
-is an exception to the fixed-width format.
+and the record's `time` field is omitted; custom time attributes use
+`0001-01-01T00:00:00Z` instead.
 Strings and times nested inside arbitrary JSON values are not rewritten.
 
 </details>

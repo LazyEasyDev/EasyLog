@@ -33,9 +33,6 @@ func normalizeJSONTimestamp(timestamp time.Time) time.Time {
 	if year := timestamp.Year(); year < 0 || year > 9999 {
 		return time.Time{}
 	}
-	if timestamp.Nanosecond()%10 == 0 {
-		timestamp = timestamp.Add(time.Nanosecond)
-	}
 	return timestamp
 }
 
