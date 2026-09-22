@@ -107,6 +107,10 @@ digits, such as `2026-09-22T06:08:57.285866001Z` (30 characters for four-digit y
 If the nanosecond value ends in zero, it is advanced by one nanosecond so the
 standard JSON handler retains all nine digits without a formatting hook. Other
 timestamps keep their original instant. Zero record timestamps remain omitted.
+If the UTC year is outside `0000` through `9999`, normalization returns zero time
+without the one-nanosecond adjustment. The record's `time` field is then omitted;
+custom time attributes use `0001-01-01T00:00:00Z` instead. This invalid-time fallback
+is an exception to the fixed-width format.
 Strings and times nested inside arbitrary JSON values are not rewritten.
 
 </details>
