@@ -5,7 +5,7 @@ import (
 	"log/slog"
 	"os"
 
-	easylog "github.com/LazyEasyDev/EasyLog"
+	"github.com/LazyEasyDev/EasyLog"
 )
 
 func getcwd() string {
@@ -17,15 +17,15 @@ func getcwd() string {
 }
 
 func main() {
-	if err := easylog.Init(easylog.InitOptions{
-		Runtime:  easylog.Options{Level: slog.LevelDebug},
-		Terminal: &easylog.TerminalOptions{Writer: os.Stdout},
-		File:     &easylog.FileOptions{BaseDirectory: getcwd()},
+	if err := EasyLog.Init(EasyLog.InitOptions{
+		Runtime:  EasyLog.Options{Level: slog.LevelDebug},
+		Terminal: &EasyLog.TerminalOptions{Writer: os.Stdout},
+		File:     &EasyLog.FileOptions{BaseDirectory: getcwd()},
 	}); err != nil {
 		panic(err)
 	}
 	defer func() {
-		if err := easylog.Close(); err != nil {
+		if err := EasyLog.Close(); err != nil {
 			fmt.Fprintln(os.Stderr, err)
 		}
 	}()

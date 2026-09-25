@@ -27,18 +27,18 @@ import (
 	"log/slog"
 	"os"
 
-	easylog "github.com/LazyEasyDev/EasyLog"
+	"github.com/LazyEasyDev/EasyLog"
 )
 
 func main() {
-	if err := easylog.Init(easylog.InitOptions{
-		Runtime:  easylog.Options{Level: slog.LevelInfo},
-		Terminal: &easylog.TerminalOptions{Writer: os.Stdout},
+	if err := EasyLog.Init(EasyLog.InitOptions{
+		Runtime:  EasyLog.Options{Level: slog.LevelInfo},
+		Terminal: &EasyLog.TerminalOptions{Writer: os.Stdout},
 	}); err != nil {
 		panic(err)
 	}
 	defer func() {
-		if err := easylog.Close(); err != nil {
+		if err := EasyLog.Close(); err != nil {
 			fmt.Fprintln(os.Stderr, err)
 		}
 	}()
@@ -61,9 +61,9 @@ INFO logs are enabled by default, even when `Level` is omitted.
 
 | Entry point | Best for | Shutdown |
 | --- | --- | --- |
-| `Init(InitOptions)` | Global logger with built-in outputs | `easylog.Close()` |
+| `Init(InitOptions)` | Global logger with built-in outputs | `EasyLog.Close()` |
 | `New(Options, []Output)` | Independent logger passed to your components | `runtime.Close()` |
-| `InitWithOutputs(Options, []Output)` | Global logger with an explicit output list | `easylog.Close()` |
+| `InitWithOutputs(Options, []Output)` | Global logger with an explicit output list | `EasyLog.Close()` |
 
 Use `Sync()` before `Close()` when you need to explicitly sync every output.
 See [shutdown](#shutdown) for output ownership and error handling.
@@ -79,12 +79,12 @@ import (
 	"log/slog"
 	"os"
 
-	easylog "github.com/LazyEasyDev/EasyLog"
+	"github.com/LazyEasyDev/EasyLog"
 	"github.com/LazyEasyDev/EasyLog/terminal"
 )
 
 func main() {
-	runtime := easylog.New(easylog.Options{Level: slog.LevelInfo}, []easylog.Output{
+	runtime := EasyLog.New(EasyLog.Options{Level: slog.LevelInfo}, []EasyLog.Output{
 		terminal.NewJSON(os.Stdout),
 	})
 	defer func() {
@@ -168,7 +168,7 @@ Structs, maps, and other JSON-compatible values can be used as field values.
 
 ```go
 var level slog.LevelVar
-runtime := easylog.New(easylog.Options{Level: &level}, []easylog.Output{
+runtime := EasyLog.New(EasyLog.Options{Level: &level}, []EasyLog.Output{
 	terminal.NewJSON(os.Stdout),
 })
 defer runtime.Close()
@@ -184,7 +184,7 @@ does not overwrite it. For a fixed threshold, set `Level: slog.LevelDebug` direc
 ### Source and Redaction
 
 ```go
-runtime := easylog.New(easylog.Options{
+runtime := EasyLog.New(EasyLog.Options{
 	Level:     slog.LevelInfo,
 	AddSource: true,
 	ReplaceAttr: func(_ []string, attr slog.Attr) slog.Attr {
@@ -193,7 +193,7 @@ runtime := easylog.New(easylog.Options{
 		}
 		return attr
 	},
-}, []easylog.Output{terminal.NewJSON(os.Stdout)})
+}, []EasyLog.Output{terminal.NewJSON(os.Stdout)})
 defer runtime.Close()
 
 runtime.Logger().Info("authorized", "token", "demo-token")
@@ -216,9 +216,9 @@ and `log/slog`:
 ```go
 type requestIDKey struct{}
 
-runtime := easylog.New(easylog.Options{
+runtime := EasyLog.New(EasyLog.Options{
 	Level: slog.LevelInfo,
-	Enrichers: []easylog.Enricher{
+	Enrichers: []EasyLog.Enricher{
 		func(ctx context.Context) []slog.Attr {
 			requestID, ok := ctx.Value(requestIDKey{}).(string)
 			if !ok {
@@ -227,7 +227,7 @@ runtime := easylog.New(easylog.Options{
 			return []slog.Attr{slog.String("request_id", requestID)}
 		},
 	},
-}, []easylog.Output{terminal.NewJSON(os.Stdout)})
+}, []EasyLog.Output{terminal.NewJSON(os.Stdout)})
 defer runtime.Close()
 
 ctx := context.WithValue(context.Background(), requestIDKey{}, "req-123")
@@ -250,7 +250,7 @@ formatter := terminal.DefaultTextFormatter()
 formatter.TimestampFormat = "15:04:05"
 formatter.DisableColors = true
 
-runtime := easylog.New(easylog.Options{Level: slog.LevelInfo}, []easylog.Output{
+runtime := EasyLog.New(EasyLog.Options{Level: slog.LevelInfo}, []EasyLog.Output{
 	terminal.New(os.Stdout, &formatter),
 })
 defer runtime.Close()
@@ -293,13 +293,13 @@ for verification methods and coverage limits.
 Combine outputs to send the same event to text and JSON destinations:
 
 ```go
-if err := easylog.InitWithOutputs(easylog.Options{Level: slog.LevelInfo}, []easylog.Output{
+if err := EasyLog.InitWithOutputs(EasyLog.Options{Level: slog.LevelInfo}, []EasyLog.Output{
 	terminal.New(os.Stderr, nil),
 	terminal.NewJSON(os.Stdout),
 }); err != nil {
 	panic(err)
 }
-defer easylog.Close()
+defer EasyLog.Close()
 slog.Info("inventory updated", "sku", "item-42", "quantity", 12)
 ```
 
@@ -314,20 +314,20 @@ directory, err := os.Getwd()
 if err != nil {
 	panic(err)
 }
-if err := easylog.Init(easylog.InitOptions{
-	Runtime: easylog.Options{Level: slog.LevelInfo},
-	File: &easylog.FileOptions{
+if err := EasyLog.Init(EasyLog.InitOptions{
+	Runtime: EasyLog.Options{Level: slog.LevelInfo},
+	File: &EasyLog.FileOptions{
 		BaseDirectory:       directory,
 		MaxSegmentBytes:     8 * 1024 * 1024,
 		MaxSegmentsPerLevel: 7,
 		Permissions:         0o600,
 	},
-	Terminal: &easylog.TerminalOptions{Writer: os.Stdout},
+	Terminal: &EasyLog.TerminalOptions{Writer: os.Stdout},
 }); err != nil {
 	panic(err)
 }
 defer func() {
-	if err := easylog.Close(); err != nil {
+	if err := EasyLog.Close(); err != nil {
 		fmt.Fprintln(os.Stderr, err)
 	}
 }()
@@ -358,7 +358,7 @@ setup; use `0o600` or `0o644`. The process must retain read/write access after
 
 For an independent runtime, import `github.com/LazyEasyDev/EasyLog/file`, create an
 output with `file.New(file.Options{BaseDirectory: directory})`, check the returned
-error, and pass it to `easylog.New`.
+error, and pass it to `EasyLog.New`.
 
 <details>
 <summary><strong>File rotation, recovery, and error behavior</strong></summary>
@@ -388,9 +388,9 @@ error, and pass it to `easylog.New`.
 Memory retention is **disabled by default**. Enable it with a positive byte limit:
 
 ```go
-runtime := easylog.New(easylog.Options{
+runtime := EasyLog.New(EasyLog.Options{
 	Level:          slog.LevelInfo,
-	MemoryMaxBytes: easylog.DefaultMemoryMaxBytes,
+	MemoryMaxBytes: EasyLog.DefaultMemoryMaxBytes,
 }, nil)
 defer runtime.Close()
 
@@ -408,7 +408,7 @@ for _, line := range page {
 
 This example retains JSON without live outputs. Memory can also run alongside
 outputs. `DefaultMemoryMaxBytes` is 8 MiB, not an automatically enabled default.
-`Consumer()` returns nil when retention is disabled; use `easylog.Consumer()` for
+`Consumer()` returns nil when retention is disabled; use `EasyLog.Consumer()` for
 the global runtime.
 
 | Method | Behavior |
@@ -441,8 +441,8 @@ if err := errors.Join(syncErr, closeErr); err != nil {
 }
 ```
 
-This snippet also imports `errors` and `fmt`. Use `easylog.Sync()` and
-`easylog.Close()` for global initialization.
+This snippet also imports `errors` and `fmt`. Use `EasyLog.Sync()` and
+`EasyLog.Close()` for global initialization.
 
 | Output | What `Close()` does |
 | --- | --- |
@@ -475,7 +475,7 @@ independent diagnostic logger or explicit handler error handling when needed.
 call package/runtime `Sync` or `Close`. Avoid logging through the same runtime
 from these callbacks: recursion can repeat indefinitely. Preparation is outside
 EasyLog's capture/output locks, but a call from `log.Print` still holds the
-standard logger's mutex. Recursive `log.Print`, or `easylog.Close()` restoring
+standard logger's mutex. Recursive `log.Print`, or `EasyLog.Close()` restoring
 that logger, can deadlock.
 
 Create a separate diagnostic logger **once, outside callbacks**, using `log` and
@@ -492,7 +492,7 @@ then return. That code can stop workers and close the runtime.
 
 ## Custom Outputs
 
-Implement `easylog.Output` and pass it to `New` or `InitWithOutputs`:
+Implement `EasyLog.Output` and pass it to `New` or `InitWithOutputs`:
 
 ```go
 type Output interface {

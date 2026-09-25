@@ -1,4 +1,4 @@
-package easylog
+package EasyLog
 
 import (
 	"context"

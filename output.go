@@ -1,6 +1,6 @@
-// Package easylog provides a synchronous slog handler with configurable
+// Package EasyLog provides a synchronous slog handler with configurable
 // output fan-out and optional bounded in-memory retention.
-package easylog
+package EasyLog
 
 import "log/slog"
 
